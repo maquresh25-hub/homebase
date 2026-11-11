@@ -13,9 +13,25 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
   <link rel="stylesheet" href="app.css">
 </head>
 <body>
+  <!-- SIGN IN (shown only when signed out) -->
+  <section id="signin" class="signin" hidden aria-labelledby="signin-title">
+    <form id="signin-form" class="signin-card" novalidate>
+      <h1 id="signin-title" class="brand-big">Homebase</h1>
+      <p class="muted">Sign in to see your day.</p>
+      <label for="signin-email">Email</label>
+      <input id="signin-email" name="email" type="email" autocomplete="username" inputmode="email" autocapitalize="off" spellcheck="false" required>
+      <label for="signin-password">Password</label>
+      <input id="signin-password" name="password" type="password" autocomplete="current-password" required>
+      <p id="signin-error" class="form-error" role="alert"></p>
+      <button type="submit" class="btn-primary" id="signin-btn">Sign in</button>
+      <button type="button" class="btn-link" id="forgot-btn">Forgot password?</button>
+    </form>
+  </section>
+
   <div class="app">
     <!-- Sidebar on Mac, bottom bar on iPhone -->
     <nav class="tabs" aria-label="Main">
@@ -32,7 +48,7 @@
       <section id="view-today" class="view" aria-labelledby="today-title">
         <header class="day-head">
           <h1 id="today-title" class="date"></h1>
-          <p class="summary" id="today-summary"></p>
+          <p class="summary" id="today-summary">&nbsp;</p>
         </header>
         <div class="today-grid">
           <div class="card timeline-card">
@@ -41,7 +57,7 @@
           <aside class="side">
             <div class="card">
               <h2>To-Do</h2>
-              <p class="empty">No tasks yet. Your list will show up here.</p>
+              <div id="today-todo" class="todo-host"></div>
             </div>
             <div class="card">
               <h2>Upcoming exam</h2>
@@ -51,15 +67,25 @@
         </div>
       </section>
 
-      <!-- OTHER TABS (filled in later steps) -->
       <section id="view-calendar" class="view" hidden>
         <header class="day-head"><h1 class="date">Calendar</h1></header>
         <div class="card"><p class="empty">Your calendar isn't connected yet.</p></div>
       </section>
+
+      <!-- TO-DO -->
       <section id="view-todo" class="view" hidden>
-        <header class="day-head"><h1 class="date">To-Do</h1></header>
-        <div class="card"><p class="empty">No tasks yet.</p></div>
+        <header class="day-head">
+          <h1 class="date">To-Do</h1>
+          <p class="summary" id="todo-summary">&nbsp;</p>
+        </header>
+        <div class="card todo-page">
+          <div id="todo-full" class="todo-host"></div>
+        </div>
+        <p class="account" id="account-line" hidden>
+          <span id="account-email"></span> · <button type="button" class="btn-link" id="signout-btn">Sign out</button>
+        </p>
       </section>
+
       <section id="view-study" class="view" hidden>
         <header class="day-head"><h1 class="date">Study</h1></header>
         <div class="card"><p class="empty">Study tools are coming in a later version.</p></div>
@@ -70,6 +96,8 @@
       </section>
     </main>
   </div>
-  <script src="app.js"></script>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="app.js"></script>
 </body>
 </html>
