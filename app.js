@@ -1,4 +1,4 @@
-// Homebase app — v3: shell + sign-in + synced To-Do + Google Calendar timeline
+// Homebase app — v4: shell + sign-in + synced To-Do + Google Calendar timeline + week view
 // Data lives in Firebase Firestore under users/{uid}/tasks/{taskId}.
 // Each task is its own document, so a change on one device never overwrites
 // other tasks, and nothing is ever hard-deleted (deleted tasks are flagged).
@@ -35,6 +35,7 @@ const state = {
   events: [],         // events from Google Calendar
   eventsAt: null,     // when they were fetched
   doneEvents: new Set(), // calendar deadlines marked done (synced in Firestore)
+  range: null,        // [startMs, endMs] the main copy covers
 };
 let fb = null;        // loaded Firebase functions + instances
 let unsubscribeTasks = null;
@@ -71,7 +72,7 @@ function renderSummary() {
 
   const parts = [];
   if (state.calStatus === "ready") {
-    const n = todaysEvents().filter((e) => !e.allDay && e.endMs - e.startMs >= 15 * 60000).length; // same blocks as the timeline
+    const n = todaysEvents().filter(isBlock).length; // same blocks as the timeline
     parts.push(n === 0 ? "Nothing on the calendar" : n + (n === 1 ? " event" : " events"));
   }
   if (state.status === "ready") parts.push(taskText);
@@ -85,23 +86,18 @@ function fmtHour(h) {
   return (h % 12 === 0 ? 12 : h % 12) + " " + suffix;
 }
 
-function renderTimeline() {
-  const tl = $("timeline");
+// Draws one day: hour lines, coloured event blocks, all-day chips and the "now" line.
+// Used by the Today screen and by the Calendar tab's iPhone day view.
+function drawDay(tl, alldayBox, date, opts) {
   const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
-  const today = todaysEvents();
-  const timed = today.filter((e) => !e.allDay && e.endMs - e.startMs >= 15 * 60000);
-  const markers = today.filter((e) => !e.allDay && e.endMs - e.startMs < 15 * 60000); // e.g. Canvas due times
-  renderAllDay(today.filter((e) => e.allDay), markers);
+  const dayEvents = eventsForDay(date);
+  const timed = dayEvents.filter(isBlock);
+  const markers = dayEvents.filter((e) => !e.allDay && !isBlock(e)); // e.g. Canvas due times
+  renderAllDay(alldayBox, dayEvents.filter((e) => e.allDay), markers);
 
   // Stretch the timeline to fit early or late events
-  let startH = DEFAULT_START, endH = DEFAULT_END;
-  const dayStart = startOfDay(new Date()).getTime();
-  timed.forEach((e) => {
-    const s = Math.max(0, (e.startMs - dayStart) / 3600000);
-    const en = Math.min(24, (e.endMs - dayStart) / 3600000);
-    startH = Math.min(startH, Math.floor(s));
-    endH = Math.max(endH, Math.ceil(en));
-  });
+  const dayStart = startOfDay(date).getTime();
+  const [startH, endH] = hourRange(timed, dayStart);
   const y = (hours) => (hours - startH) * hourPx + 8;
 
   tl.textContent = "";
@@ -116,62 +112,77 @@ function renderTimeline() {
     tl.appendChild(row);
   }
 
-  if (state.calStatus !== "ready" && state.calStatus !== "loading") {
-    const empty = document.createElement("p");
-    empty.className = "tl-empty";
-    if (state.calStatus === "error") {
-      empty.textContent = "Couldn't reach your calendar. ";
-      const retry = document.createElement("button");
-      retry.type = "button"; retry.className = "btn-link"; retry.textContent = "Try again";
-      retry.addEventListener("click", () => refreshEvents(true));
-      empty.appendChild(retry);
-    } else {
-      empty.textContent = "Your calendar isn't connected yet. ";
-      const link = document.createElement("a");
-      link.href = "#calendar"; link.textContent = "Connect it";
-      empty.appendChild(link);
+  const emptyMsg = (text, linkText, onClick, href) => {
+    const p = document.createElement("p");
+    p.className = "tl-empty";
+    p.textContent = text;
+    if (linkText) {
+      const a = document.createElement(href ? "a" : "button");
+      if (href) a.href = href; else { a.type = "button"; a.className = "btn-link"; a.addEventListener("click", onClick); }
+      a.textContent = linkText;
+      p.appendChild(a);
     }
-    tl.appendChild(empty);
-  } else if (state.calStatus === "ready" && timed.length === 0) {
-    const empty = document.createElement("p");
-    empty.className = "tl-empty";
-    empty.textContent = "Nothing scheduled today. Enjoy the open time.";
-    tl.appendChild(empty);
-  }
+    tl.appendChild(p);
+  };
+  if (state.calStatus === "error" && !timed.length) emptyMsg("Couldn't reach your calendar. ", "Try again", () => refreshEvents(true));
+  else if (state.calStatus === "none") emptyMsg("Your calendar isn't connected yet. ", "Connect it", null, "#calendar");
+  else if (opts.loading) emptyMsg("Loading…");
+  else if (state.calStatus === "ready" && timed.length === 0) emptyMsg(opts.emptyText || "Nothing scheduled.");
 
-  // Events, side by side when they overlap
   layoutColumns(timed).forEach(({ ev, col, cols }) => {
     const s = Math.max(startH, (ev.startMs - dayStart) / 3600000);
     const en = Math.min(endH, (ev.endMs - dayStart) / 3600000);
-    const block = document.createElement("div");
-    block.className = "event cat-" + ev.cat;
+    const block = eventBlock(ev, (en - s) * hourPx);
     block.style.top = y(s) + 1 + "px";
-    block.style.height = Math.max(22, (en - s) * hourPx - 3) + "px";
     block.style.left = "calc(76px + (100% - 76px) * " + col / cols + ")";
     block.style.width = "calc((100% - 76px) / " + cols + " - 4px)";
-    const title = document.createElement("strong");
-    title.textContent = ev.title;
-    const time = document.createElement("span");
-    time.textContent = fmtTime(ev.startMs) + " – " + fmtTime(ev.endMs);
-    block.append(title, time);
-    block.title = ev.title + "\n" + time.textContent + (ev.location ? "\n" + ev.location : "");
-    if ((en - s) * hourPx < 40) block.classList.add("short");
     tl.appendChild(block);
   });
 
   const now = new Date();
+  if (startOfDay(now).getTime() !== dayStart) return null;
   const hours = now.getHours() + now.getMinutes() / 60;
-  if (hours >= startH && hours <= endH) {
-    const line = document.createElement("div");
-    line.className = "now";
-    line.style.top = y(hours) + "px";
-    const b = document.createElement("b");
-    b.textContent = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-    line.appendChild(b);
-    tl.appendChild(line);
-    return line;
-  }
-  return null;
+  if (hours < startH || hours > endH) return null;
+  const line = document.createElement("div");
+  line.className = "now";
+  line.style.top = y(hours) + "px";
+  const b = document.createElement("b");
+  b.textContent = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  line.appendChild(b);
+  tl.appendChild(line);
+  return line;
+}
+
+const isBlock = (e) => !e.allDay && e.endMs - e.startMs >= 15 * 60000;
+
+function hourRange(timed, dayStart) {
+  let startH = DEFAULT_START, endH = DEFAULT_END;
+  timed.forEach((e) => {
+    startH = Math.min(startH, Math.floor(Math.max(0, (e.startMs - dayStart) / 3600000)));
+    endH = Math.max(endH, Math.ceil(Math.min(24, (e.endMs - dayStart) / 3600000)));
+  });
+  return [startH, endH];
+}
+
+// A tappable coloured block; tapping opens the event's details
+function eventBlock(ev, heightPx) {
+  const block = document.createElement("button");
+  block.type = "button";
+  block.className = "event cat-" + ev.cat;
+  block.style.height = Math.max(22, heightPx - 3) + "px";
+  const title = document.createElement("strong");
+  title.textContent = ev.title;
+  const time = document.createElement("span");
+  time.textContent = fmtTime(ev.startMs) + " – " + fmtTime(ev.endMs);
+  block.append(title, time);
+  block.setAttribute("aria-label", ev.title + ", " + time.textContent);
+  if (heightPx < 40) block.classList.add("short");
+  block.addEventListener("click", () => openEventSheet(ev));
+  return block;
+}
+
+function renderTimeline() {
+  return drawDay($("timeline"), $("allday"), new Date(), { emptyText: "Nothing scheduled today. Enjoy the open time." });
 }
 
 function scrollToNow(line) {
@@ -689,10 +700,11 @@ function normalize(raw) {
   }).filter((e) => !isNaN(e.startMs) && !isNaN(e.endMs));
 }
 
-function todaysEvents() {
-  const s = startOfDay(new Date()).getTime(), e = s + 86400000;
-  const today = state.events.filter((ev) => ev.startMs < e && ev.endMs > s && !state.doneEvents.has(ev.id));
-  return dedupe(today).sort((a, b) => a.startMs - b.startMs);
+function eventsForDay(date) {
+  const s = startOfDay(date).getTime(), e = addDays(startOfDay(date), 1).getTime();
+  // Hide deadlines marked done, and duplicates that come from two calendars.
+  const list = state.events.filter((ev) => ev.startMs < e && ev.endMs > s && !state.doneEvents.has(ev.id));
+  return dedupe(list).sort((a, b) => a.startMs - b.startMs);
 }
 
 // The same event often comes from two calendars (e.g. "Veterans Day" from Holidays
@@ -710,6 +722,7 @@ function dedupe(events) {
     o.startMs === ev.startMs && simpleTitle(o.title).length > simpleTitle(ev.title).length &&
     simpleTitle(o.title).startsWith(simpleTitle(ev.title) + " "))));
 }
+const todaysEvents = () => eventsForDay(new Date());
 
 // Group overlapping events into columns so nothing hides behind anything else
 function layoutColumns(events) {
@@ -728,8 +741,7 @@ function layoutColumns(events) {
   return out;
 }
 
-function renderAllDay(allDay, markers) {
-  const box = $("allday");
+function renderAllDay(box, allDay, markers) {
   box.textContent = "";
   const items = [
     ...allDay.map((e) => ({ ev: e, text: e.title })),
@@ -737,19 +749,21 @@ function renderAllDay(allDay, markers) {
   ];
   box.hidden = items.length === 0;
   items.forEach(({ ev, text }) => {
-    // Quizzes and deadlines can be ticked off: tap to mark done and hide them.
+    const chip = document.createElement("button");
+    chip.type = "button";
+    // Quizzes and deadlines: tap to mark done and hide them. Everything else: tap for details.
     const doable = ev.cat === "due";
-    const chip = document.createElement(doable ? "button" : "span");
     chip.className = "chip cat-" + ev.cat + (doable ? " chip-done-able" : "");
     if (doable) {
-      chip.type = "button";
       chip.title = "Mark done";
       chip.setAttribute("aria-label", text + ". Tap to mark done");
-      const box2 = document.createElement("span");
-      box2.className = "chip-check";
-      box2.setAttribute("aria-hidden", "true");
-      chip.appendChild(box2);
+      const check = document.createElement("span");
+      check.className = "chip-check";
+      check.setAttribute("aria-hidden", "true");
+      chip.appendChild(check);
       chip.addEventListener("click", () => markEventDone(ev));
+    } else {
+      chip.addEventListener("click", () => openEventSheet(ev));
     }
     chip.appendChild(document.createTextNode(text));
     box.appendChild(chip);
@@ -799,18 +813,257 @@ function renderExamCard() {
   host.append(name, big, when);
 }
 
+// ================================================================ CALENDAR TAB
+// Mac: a week grid like Apple Calendar. iPhone: a week strip with the chosen day below.
+const narrow = window.matchMedia("(max-width: 820px)");
+const cal = {
+  weekStart: startOfWeek(new Date()),
+  selected: startOfDay(new Date()),
+  cache: new Map(),       // weekStart ms -> events fetched for weeks outside the main range
+  loadingWeeks: new Set(),
+};
+
+function startOfWeek(d) { const x = startOfDay(d); x.setDate(x.getDate() - x.getDay()); return x; } // Sunday
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
+function ymd(d) { return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0"); }
+const sameDay = (a, b) => startOfDay(a).getTime() === startOfDay(b).getTime();
+
+// Events for a week: from the main copy if it covers that week, otherwise fetched on demand
+function weekEvents(weekStart) {
+  const s = weekStart.getTime(), e = addDays(weekStart, 7).getTime();
+  if (state.range && s >= state.range[0] && e <= state.range[1]) return { events: state.events, loading: false };
+  if (cal.cache.has(s)) return { events: cal.cache.get(s), loading: false };
+  if (state.calUrl && !cal.loadingWeeks.has(s)) fetchWeek(weekStart);
+  return { events: [], loading: !!state.calUrl };
+}
+
+async function fetchWeek(weekStart) {
+  const s = weekStart.getTime();
+  cal.loadingWeeks.add(s);
+  try {
+    const data = await fetchCalendar(ymd(weekStart), ymd(addDays(weekStart, 7)));
+    cal.cache.set(s, normalize(data.events));
+  } catch (e) {
+    console.warn("Week fetch failed:", e);
+    toast("Couldn't load that week. Check your connection.");
+    cal.cache.set(s, []);
+  } finally {
+    cal.loadingWeeks.delete(s);
+    renderCalendarTab();
+  }
+}
+
 function renderCalendarTab() {
   const connected = !!state.calUrl;
-  $("cal-connect-title").textContent = connected ? "Google Calendar connected" : "Connect your Google Calendar";
-  $("cal-connect-help").textContent = connected
-    ? "To change it, paste a new link and press Update."
-    : "Paste your private Homebase calendar link below.";
+  $("cal-connect").hidden = connected && !cal.editing;
+  $("cal-connect-title").textContent = connected ? "Change your calendar link" : "Connect your Google Calendar";
   $("cal-btn").textContent = connected ? "Update" : "Connect";
+  $("cal-settings").hidden = !connected || cal.editing;
+  $("cal-views").hidden = !connected && state.calStatus === "none";
+
+  const ws = cal.weekStart;
+  const mid = addDays(ws, 3);
+  $("cal-title").textContent = mid.toLocaleDateString("en-US", { month: "long", year: "numeric" });
   let status = " ";
   if (state.calStatus === "ready" && state.eventsAt) status = "Updated " + fmtTime(state.eventsAt);
   else if (state.calStatus === "loading") status = "Updating…";
   else if (state.calStatus === "error") status = "Couldn't reach your calendar";
   $("cal-status").textContent = status;
+  if ($("cal-views").hidden) return;
+
+  const { events, loading } = weekEvents(ws);
+  const prev = state.events;
+  state.events = events;            // drawing helpers read state.events; restore right after
+  try {
+    if (narrow.matches) renderPhoneWeek(loading);
+    else renderWeekGrid(loading);
+  } finally {
+    state.events = prev;
+  }
+}
+
+function renderPhoneWeek(loading) {
+  $("week-grid").hidden = true;
+  $("phone-week").hidden = false;
+  if (!sameDay(startOfWeek(cal.selected), cal.weekStart)) {
+    cal.selected = addDays(cal.weekStart, cal.selected.getDay());
+  }
+  const strip = $("week-strip");
+  strip.textContent = "";
+  for (let i = 0; i < 7; i++) {
+    const d = addDays(cal.weekStart, i);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "strip-day" + (sameDay(d, new Date()) ? " is-today" : "") + (sameDay(d, cal.selected) ? " is-selected" : "");
+    btn.setAttribute("aria-pressed", sameDay(d, cal.selected) ? "true" : "false");
+    btn.setAttribute("aria-label", d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }));
+    const dow = document.createElement("span");
+    dow.textContent = d.toLocaleDateString("en-US", { weekday: "narrow" });
+    const num = document.createElement("b");
+    num.textContent = d.getDate();
+    btn.append(dow, num);
+    if (eventsForDay(d).some((e) => !e.allDay)) btn.classList.add("has-events");
+    btn.addEventListener("click", () => { cal.selected = d; renderCalendarTab(); });
+    strip.appendChild(btn);
+  }
+  $("day-title").textContent = cal.selected.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+  const line = drawDay($("day-timeline"), $("day-allday"), cal.selected, { loading, emptyText: "Nothing scheduled." });
+  if (line && !cal.scrolledPhone) { scrollToNow(line); cal.scrolledPhone = true; }
+}
+
+function renderWeekGrid(loading) {
+  $("phone-week").hidden = true;
+  const host = $("week-grid");
+  host.hidden = false;
+  host.textContent = "";
+  const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
+  const days = [...Array(7)].map((_, i) => addDays(cal.weekStart, i));
+  const perDay = days.map((d) => eventsForDay(d));
+
+  // One shared hour range for the week
+  let startH = DEFAULT_START, endH = DEFAULT_END;
+  perDay.forEach((list, i) => {
+    const [a, b] = hourRange(list.filter(isBlock), days[i].getTime());
+    startH = Math.min(startH, a); endH = Math.max(endH, b);
+  });
+  const y = (h) => (h - startH) * hourPx + 8;
+
+  // Header: day names and dates
+  const head = document.createElement("div");
+  head.className = "wk-head";
+  head.appendChild(document.createElement("div"));
+  days.forEach((d) => {
+    const c = document.createElement("div");
+    c.className = "wk-day" + (sameDay(d, new Date()) ? " is-today" : "");
+    const dow = document.createElement("span");
+    dow.textContent = d.toLocaleDateString("en-US", { weekday: "short" });
+    const num = document.createElement("b");
+    num.textContent = d.getDate();
+    c.append(dow, num);
+    head.appendChild(c);
+  });
+  host.appendChild(head);
+
+  // All-day and deadline chips, per day
+  const chipsByDay = perDay.map((list) => list.filter((e) => e.allDay || !isBlock(e)));
+  if (chipsByDay.some((l) => l.length)) {
+    const row = document.createElement("div");
+    row.className = "wk-allday";
+    row.appendChild(document.createElement("div"));
+    chipsByDay.forEach((list) => {
+      const cell = document.createElement("div");
+      list.forEach((e) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "chip cat-" + e.cat;
+        chip.textContent = e.allDay ? e.title : e.title + " · " + fmtTime(e.startMs);
+        chip.addEventListener("click", () => openEventSheet(e));
+        cell.appendChild(chip);
+      });
+      row.appendChild(cell);
+    });
+    host.appendChild(row);
+  }
+
+  const scroller = document.createElement("div");
+  scroller.className = "wk-scroll";
+  const body = document.createElement("div");
+  body.className = "wk-body";
+  body.style.height = (endH - startH) * hourPx + 16 + "px";
+  for (let h = startH; h <= endH; h++) {
+    const row = document.createElement("div");
+    row.className = "hour";
+    row.style.top = y(h) + "px";
+    const label = document.createElement("span");
+    label.textContent = h === 24 ? "12 AM" : fmtHour(h);
+    row.appendChild(label);
+    body.appendChild(row);
+  }
+  let nowLine = null;
+  days.forEach((d, i) => {
+    const col = document.createElement("div");
+    col.className = "wk-col" + (sameDay(d, new Date()) ? " is-today" : "");
+    col.style.left = "calc(64px + (100% - 64px) * " + i / 7 + ")";
+    col.style.width = "calc((100% - 64px) / 7)";
+    const dayStart = d.getTime();
+    layoutColumns(perDay[i].filter(isBlock)).forEach(({ ev, col: c, cols }) => {
+      const s = Math.max(startH, (ev.startMs - dayStart) / 3600000);
+      const en = Math.min(endH, (ev.endMs - dayStart) / 3600000);
+      const block = eventBlock(ev, (en - s) * hourPx);
+      block.style.top = y(s) + 1 + "px";
+      block.style.left = "calc(" + (100 * c / cols) + "% + 2px)";
+      block.style.width = "calc(" + (100 / cols) + "% - 4px)";
+      col.appendChild(block);
+    });
+    if (sameDay(d, new Date())) {
+      const now = new Date();
+      const hours = now.getHours() + now.getMinutes() / 60;
+      if (hours >= startH && hours <= endH) {
+        nowLine = document.createElement("div");
+        nowLine.className = "wk-now";
+        nowLine.style.top = y(hours) + "px";
+        col.appendChild(nowLine);
+      }
+    }
+    body.appendChild(col);
+  });
+  if (loading) {
+    const p = document.createElement("p");
+    p.className = "tl-empty";
+    p.textContent = "Loading this week…";
+    body.appendChild(p);
+  }
+  scroller.appendChild(body);
+  host.appendChild(scroller);
+  // Open at 8 AM so mornings are visible; later in the day, keep the "now" line in view
+  requestAnimationFrame(() => {
+    let target = y(Math.max(startH, 8)) - 8;
+    if (nowLine && nowLine.offsetTop > target + scroller.clientHeight - 80) target = nowLine.offsetTop - scroller.clientHeight / 2;
+    scroller.scrollTop = Math.max(0, target);
+  });
+}
+
+// ---------- Event details (opens on tap) ----------
+function openEventSheet(ev) {
+  const sheet = $("event-sheet");
+  $("sheet-title").textContent = ev.title;
+  $("sheet-dot").className = "dot cat-" + ev.cat;
+  const day = new Date(ev.startMs).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  $("sheet-when").textContent = ev.allDay ? day + " · All day"
+    : day + " · " + fmtTime(ev.startMs) + (ev.endMs > ev.startMs ? " – " + fmtTime(ev.endMs) : "");
+  $("sheet-cal").textContent = ev.calendar ? "From " + ev.calendar : "";
+  $("sheet-loc").textContent = ev.location || "";
+  $("sheet-loc").hidden = !ev.location;
+  sheet.hidden = false;
+  $("sheet-close").focus();
+}
+function closeEventSheet() { $("event-sheet").hidden = true; }
+
+function wireCalendarTab() {
+  const go = (days) => { cal.weekStart = addDays(cal.weekStart, days); cal.selected = addDays(cal.selected, days); renderCalendarTab(); };
+  $("wk-prev").addEventListener("click", () => go(-7));
+  $("wk-next").addEventListener("click", () => go(7));
+  $("wk-today").addEventListener("click", () => {
+    cal.weekStart = startOfWeek(new Date()); cal.selected = startOfDay(new Date()); renderCalendarTab();
+  });
+  narrow.addEventListener("change", renderCalendarTab);
+  $("cal-settings").addEventListener("click", () => {
+    cal.editing = true; renderCalendarTab(); $("cal-url").focus();
+  });
+  $("sheet-close").addEventListener("click", closeEventSheet);
+  $("event-sheet").addEventListener("click", (e) => { if (e.target.id === "event-sheet") closeEventSheet(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEventSheet(); });
+  // Swipe left/right on the iPhone day view to change day
+  let x0 = null;
+  $("phone-week").addEventListener("touchstart", (e) => { x0 = e.touches[0].clientX; }, { passive: true });
+  $("phone-week").addEventListener("touchend", (e) => {
+    if (x0 === null) return;
+    const dx = e.changedTouches[0].clientX - x0; x0 = null;
+    if (Math.abs(dx) < 60) return;
+    cal.selected = addDays(cal.selected, dx < 0 ? 1 : -1);
+    cal.weekStart = startOfWeek(cal.selected);
+    renderCalendarTab();
+  });
 }
 
 let scrolledToNow = false;
@@ -830,9 +1083,44 @@ function loadCachedEvents() {
     if (raw && Array.isArray(raw.events)) {
       state.events = normalize(raw.events);
       state.eventsAt = raw.at || null;
+      state.range = Array.isArray(raw.range) ? raw.range : null;
       state.calStatus = "ready";
     }
   } catch (e) { /* ignore a bad cache */ }
+}
+
+// The main copy covers last week through the next 5 weeks (Today, exams and nearby weeks)
+function mainRange() {
+  const from = addDays(startOfWeek(new Date()), -7);
+  const to = addDays(startOfDay(new Date()), 36);
+  return [from, to];
+}
+
+async function fetchCalendar(from, to, url) {
+  const res = await fetch((url || state.calUrl) + "&from=" + from + "&to=" + to, { cache: "no-store" });
+  const data = await res.json();
+  if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error((data && data.error) || "bad response");
+  return data;
+}
+
+function fetchMainRange(url) {
+  const [from, to] = mainRange();
+  return fetchCalendar(ymd(from), ymd(to), url);
+}
+
+function applyMainData(data) {
+  state.events = normalize(data.events);
+  state.eventsAt = Date.now();
+  // Older scripts ignore from/to and send yesterday to +30 days
+  if (data.from && data.to) {
+    const [fy, fm, fd] = data.from.split("-").map(Number), [ty, tm, td] = data.to.split("-").map(Number);
+    state.range = [new Date(fy, fm - 1, fd).getTime(), new Date(ty, tm - 1, td).getTime()];
+  } else {
+    state.range = [addDays(startOfDay(new Date()), -1).getTime(), addDays(startOfDay(new Date()), 31).getTime()];
+  }
+  state.calStatus = "ready";
+  cal.cache.clear();
+  try { localStorage.setItem(cacheKey(), JSON.stringify({ at: state.eventsAt, range: state.range, events: data.events })); } catch (e) {}
 }
 
 let fetching = false;
@@ -841,13 +1129,8 @@ async function refreshEvents(showLoading) {
   fetching = true;
   if (showLoading || !state.events.length) { state.calStatus = "loading"; renderCalendar(); }
   try {
-    const res = await fetch(state.calUrl, { cache: "no-store" });
-    const data = await res.json();
-    if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error((data && data.error) || "bad response");
-    state.events = normalize(data.events);
-    state.eventsAt = Date.now();
-    state.calStatus = "ready";
-    try { localStorage.setItem(cacheKey(), JSON.stringify({ at: state.eventsAt, events: data.events })); } catch (e) {}
+    const data = await fetchMainRange(state.calUrl);
+    applyMainData(data);
   } catch (e) {
     console.warn("Calendar fetch failed:", e);
     // Keep showing the last good copy if there is one
@@ -868,7 +1151,8 @@ function validCalUrl(u) {
 }
 
 async function loadCalendarSettings(user) {
-  state.calUrl = null; state.events = []; state.eventsAt = null; state.calStatus = "none";
+  state.calUrl = null; state.events = []; state.eventsAt = null; state.range = null; state.calStatus = "none";
+  cal.cache.clear();
   loadCachedEvents();
   renderCalendar();
   try {
@@ -897,16 +1181,12 @@ function wireCalendar() {
     btn.disabled = true;
     try {
       // Check the link works before saving it
-      const res = await fetch(url, { cache: "no-store" });
-      const data = await res.json();
-      if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error("bad key");
+      const data = await fetchMainRange(url);
       await fb.setDoc(fb.doc(fb.db, "users", state.user.uid, "settings", "calendar"), { url, updatedAt: Date.now() });
       state.calUrl = url;
       $("cal-url").value = "";
-      state.events = normalize(data.events);
-      state.eventsAt = Date.now();
-      state.calStatus = "ready";
-      try { localStorage.setItem(cacheKey(), JSON.stringify({ at: state.eventsAt, events: data.events })); } catch (e2) {}
+      applyMainData(data);
+      cal.editing = false;
       renderCalendar();
       toast("Calendar connected.");
       location.hash = "#today";
@@ -934,6 +1214,7 @@ renderCalendar();
 setInterval(() => { renderHeader(); renderCalendar(); }, 60 * 1000);
 wireSignIn();
 wireCalendar();
+wireCalendarTab();
 startData();
 
 if ("serviceWorker" in navigator) {

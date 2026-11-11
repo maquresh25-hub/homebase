@@ -69,11 +69,19 @@
       </section>
 
       <section id="view-calendar" class="view" hidden>
-        <header class="day-head">
-          <h1 class="date">Calendar</h1>
-          <p class="summary" id="cal-status">&nbsp;</p>
+        <header class="day-head cal-head">
+          <div>
+            <h1 class="date" id="cal-title">Calendar</h1>
+            <p class="summary" id="cal-status">&nbsp;</p>
+          </div>
+          <div class="wk-nav" role="group" aria-label="Change week">
+            <button type="button" class="nav-btn" id="wk-prev" aria-label="Previous week">‹</button>
+            <button type="button" class="nav-btn today-btn" id="wk-today">Today</button>
+            <button type="button" class="nav-btn" id="wk-next" aria-label="Next week">›</button>
+          </div>
         </header>
-        <div class="card cal-connect">
+
+        <div class="card cal-connect" id="cal-connect">
           <h2 id="cal-connect-title">Connect your Google Calendar</h2>
           <p class="empty" id="cal-connect-help">Paste your private Homebase calendar link below.</p>
           <form id="cal-form" class="cal-form" novalidate>
@@ -83,7 +91,21 @@
           </form>
           <p id="cal-error" class="form-error" role="alert"></p>
         </div>
-        <p class="empty cal-note">The full week view comes in the next update.</p>
+
+        <div id="cal-views">
+          <!-- Mac: week grid -->
+          <div class="card week-card" id="week-grid" hidden></div>
+          <!-- iPhone: week strip + day -->
+          <div id="phone-week" hidden>
+            <div class="week-strip" id="week-strip"></div>
+            <div class="card timeline-card day-card">
+              <h2 class="day-title" id="day-title"></h2>
+              <div class="allday" id="day-allday" hidden></div>
+              <div class="timeline" id="day-timeline" aria-label="Day timeline"></div>
+            </div>
+          </div>
+        </div>
+        <p class="account"><button type="button" class="btn-link" id="cal-settings" hidden>Change calendar link</button></p>
       </section>
 
       <!-- TO-DO -->
@@ -109,6 +131,20 @@
         <div class="card"><p class="empty">Materials are coming in a later version.</p></div>
       </section>
     </main>
+  </div>
+
+  <!-- Event details -->
+  <div id="event-sheet" class="sheet-backdrop" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title">
+      <div class="sheet-top">
+        <span id="sheet-dot" class="dot"></span>
+        <h2 id="sheet-title"></h2>
+        <button type="button" id="sheet-close" class="sheet-close" aria-label="Close">×</button>
+      </div>
+      <p id="sheet-when"></p>
+      <p id="sheet-loc" class="muted-line" hidden></p>
+      <p id="sheet-cal" class="muted-line"></p>
+    </div>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
