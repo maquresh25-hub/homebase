@@ -178,7 +178,32 @@ function eventBlock(ev, heightPx) {
   block.setAttribute("aria-label", ev.title + ", " + time.textContent);
   if (heightPx < 40) block.classList.add("short");
   block.addEventListener("click", () => openEventSheet(ev));
-  return block;
+  if (ev.cat !== "study") return block;
+
+  // Study blocks get a play button (no separate study button anywhere else)
+  const logged = loggedFor(ev);
+  if (logged > 0) {
+    const em = document.createElement("em");
+    em.className = "logged";
+    em.textContent = "✓ " + fmtDuration(logged) + " logged";
+    block.appendChild(em);
+  }
+  const wrap = document.createElement("div");
+  wrap.className = "event-wrap";
+  wrap.style.height = block.style.height;
+  block.style.height = "";
+  const isRunning = !!(timer.running && timer.running.eventId === ev.id);
+  const play = document.createElement("button");
+  play.type = "button";
+  play.className = "play" + (isRunning ? " is-running" : "");
+  play.setAttribute("aria-label", (isRunning ? "Stop study timer for " : "Start study timer for ") + ev.title);
+  play.innerHTML = isRunning
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.5v11l9-5.5z"/></svg>';
+  play.addEventListener("click", (e) => { e.stopPropagation(); if (isRunning) stopSession(); else startSession(ev); });
+  if (heightPx < 40) wrap.classList.add("short");
+  wrap.append(block, play);
+  return wrap;
 }
 
 function renderTimeline() {
@@ -555,6 +580,8 @@ async function loadFirebase() {
     getDoc: fsMod.getDoc,
     updateDoc: fsMod.updateDoc,
     onSnapshot: fsMod.onSnapshot,
+    query: fsMod.query,
+    where: fsMod.where,
   };
 }
 
@@ -645,7 +672,8 @@ async function startData() {
     $("account-email").textContent = user ? user.email : "";
     showSignIn(!user);
     stopDone();
-    if (user) { startTasks(user); startDone(user); loadCalendarSettings(user); }
+    stopSessions();
+    if (user) { startTasks(user); startDone(user); startSessions(user); loadCalendarSettings(user); }
     else {
       renderTasks();
       state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
@@ -1207,6 +1235,216 @@ function wireCalendar() {
   setInterval(() => refreshEvents(false), REFRESH_MS);
 }
 
+// ================================================================ STUDY TIMER
+// Tap ▶ on a yellow study block to start; the timer shows at the bottom of the
+// sidebar (Mac) or above the tab bar (iPhone) on every screen. Sessions sync
+// between devices in users/{uid}/sessions, in the shape the Learning Time
+// Tracker spec needs later (start, end, course, topic, method, focus, note).
+const STALE_MS = 4 * 3600000;   // a timer running this long probably wasn't stopped
+const timer = { running: null, recent: [], unsubRunning: null, unsubRecent: null, tick: null, staleAsked: new Set() };
+
+function sessionRef(id) { return fb.doc(fb.db, "users", state.user.uid, "sessions", id); }
+
+// "Chem 1130 study block" -> "Chem 1130"; "ʿAlim Class — Study with Jabrail" -> "ʿAlim Class"
+function guessCourse(title) {
+  const first = title.split(/\s+[—–-]\s+/)[0];
+  const t = first.replace(/\b(study|studying|block|session|review|prep|practice|revision)\b/gi, "").replace(/\s+/g, " ").trim();
+  // "Study session with Jabrail" leaves just "with Jabrail", which isn't a course. Use the full title.
+  if (!t || /^(with|for|and|&|at|on)\b/i.test(t)) return title;
+  return t;
+}
+
+function fmtDuration(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  if (m < 60) return m + " min";
+  const h = Math.floor(m / 60), r = m % 60;
+  return h + " h" + (r ? " " + r + " min" : "");
+}
+
+function fmtClock(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const mm = String(m).padStart(h ? 2 : 1, "0"), ss = String(sec).padStart(2, "0");
+  return h ? h + ":" + mm + ":" + ss : mm + ":" + ss;
+}
+
+// Minutes already logged for a calendar block (shown on the block)
+function loggedFor(ev) {
+  return timer.recent.filter((s) => s.eventId === ev.id && s.status === "done" && s.end)
+    .reduce((sum, s) => sum + (s.end - s.start), 0);
+}
+
+function startSession(ev) {
+  if (!fb || !state.user) return;
+  unlockAudio();
+  const now = Date.now();
+  if (timer.running) {
+    const prev = timer.running;
+    finishSession(prev, now, true);
+    toast("Saved " + fmtDuration(now - prev.start) + " of " + prev.label + ". Started " + guessCourse(ev.title) + ".");
+  }
+  const ref = fb.doc(fb.collection(fb.db, "users", state.user.uid, "sessions"));
+  const session = {
+    status: "running", start: now, end: null,
+    label: ev.title, course: guessCourse(ev.title), topic: null, method: null,
+    eventId: ev.id, eventEnd: ev.endMs, focus: null, note: "", updatedAt: now,
+  };
+  timer.running = { id: ref.id, ...session };   // show it right away; Firestore catches up
+  renderTimer();
+  renderCalendar();
+  save(fb.setDoc(ref, session));
+}
+
+function finishSession(s, endMs, quiet) {
+  const end = Math.max(s.start + 1000, endMs);
+  if (timer.running && timer.running.id === s.id) timer.running = null;
+  const done = { ...s, status: "done", end };
+  timer.recent = [done, ...timer.recent.filter((x) => x.id !== s.id)];
+  save(fb.updateDoc(sessionRef(s.id), { status: "done", end, updatedAt: Date.now() }));
+  renderTimer();
+  renderCalendar();
+  if (!quiet) openSessionSheet(done);
+}
+
+function stopSession() {
+  if (timer.running) { playTick(); finishSession(timer.running, Date.now(), false); }
+}
+
+// ---------- Running timer bar ----------
+function renderTimer() {
+  const bar = $("timer-bar");
+  const s = timer.running;
+  document.body.classList.toggle("timer-on", !!s);
+  bar.hidden = !s;
+  clearInterval(timer.tick);
+  if (!s) return;
+  $("timer-label").textContent = s.course || s.label;
+  const update = () => { $("timer-time").textContent = fmtClock(Date.now() - s.start); };
+  update();
+  timer.tick = setInterval(update, 1000);
+  if (Date.now() - s.start > STALE_MS && !timer.staleAsked.has(s.id)) { timer.staleAsked.add(s.id); openStaleSheet(s); }
+}
+
+// ---------- After stopping: optional focus rating and note ----------
+let sheetSession = null;
+function openSessionSheet(s) {
+  sheetSession = s;
+  $("session-title").textContent = "Logged " + fmtDuration(s.end - s.start);
+  $("session-sub").textContent = s.label + " · " + fmtTime(s.start) + " – " + fmtTime(s.end);
+  $("session-note").value = s.note || "";
+  document.querySelectorAll("#focus-row button").forEach((b) => b.setAttribute("aria-pressed", String(Number(b.dataset.v) === s.focus)));
+  $("session-sheet").hidden = false;
+}
+
+function closeSessionSheet(saveIt) {
+  const s = sheetSession;
+  $("session-sheet").hidden = true;
+  sheetSession = null;
+  if (!s || !saveIt) return;
+  const pressed = document.querySelector('#focus-row button[aria-pressed="true"]');
+  const focus = pressed ? Number(pressed.dataset.v) : null;
+  const note = $("session-note").value.trim().slice(0, 500);
+  if (focus !== s.focus || note !== (s.note || "")) {
+    save(fb.updateDoc(sessionRef(s.id), { focus, note, updatedAt: Date.now() }));
+  }
+}
+
+function deleteSheetSession() {
+  const s = sheetSession;
+  $("session-sheet").hidden = true;
+  sheetSession = null;
+  if (!s) return;
+  timer.recent = timer.recent.filter((x) => x.id !== s.id);
+  save(fb.updateDoc(sessionRef(s.id), { status: "deleted", updatedAt: Date.now() }));
+  renderCalendar();
+  toast("Session deleted", "Undo", () => {
+    save(fb.updateDoc(sessionRef(s.id), { status: "done", updatedAt: Date.now() }));
+  });
+}
+
+// ---------- Forgot to stop? Ask, never log silently ----------
+let staleSession = null;
+function openStaleSheet(s) {
+  staleSession = s;
+  const startTxt = new Date(s.start).toLocaleDateString("en-US", { weekday: "short" }) + " " + fmtTime(s.start);
+  $("stale-text").textContent = "Your " + (s.course || s.label) + " timer has been running since " + startTxt +
+    " (" + fmtDuration(Date.now() - s.start) + "). When did you stop?";
+  const endBtn = $("stale-end");
+  const canUseEnd = s.eventEnd && s.eventEnd > s.start && s.eventEnd < Date.now();
+  endBtn.hidden = !canUseEnd;
+  if (canUseEnd) endBtn.textContent = "When the block ended (" + fmtTime(s.eventEnd) + ")";
+  const d = new Date(Math.min(Date.now(), s.start + 3600000));
+  $("stale-time").value = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+  $("stale-error").textContent = "";
+  $("stale-sheet").hidden = false;
+}
+
+function resolveStale(endMs) {
+  const s = staleSession;
+  $("stale-sheet").hidden = true;
+  staleSession = null;
+  if (s && endMs) finishSession(s, endMs, false);
+}
+
+// ---------- Sync ----------
+function startSessions(user) {
+  const col = fb.collection(fb.db, "users", user.uid, "sessions");
+  timer.unsubRunning = fb.onSnapshot(fb.query(col, fb.where("status", "==", "running")), (snap) => {
+    const list = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => b.start - a.start);
+    // Only one timer can run. If two devices started one, keep the newest and save the older.
+    list.slice(1).forEach((old) => finishSession(old, Math.min(Date.now(), list[0].start), true));
+    timer.running = list[0] || null;
+    renderTimer();
+    renderCalendar();
+  }, (e) => console.warn("Couldn't load the timer:", e));
+  const since = addDays(startOfDay(new Date()), -7).getTime();
+  timer.unsubRecent = fb.onSnapshot(fb.query(col, fb.where("start", ">=", since)), (snap) => {
+    timer.recent = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((s) => s.status === "done");
+    renderCalendar();
+  }, (e) => console.warn("Couldn't load study sessions:", e));
+}
+
+function stopSessions() {
+  if (timer.unsubRunning) timer.unsubRunning();
+  if (timer.unsubRecent) timer.unsubRecent();
+  timer.unsubRunning = timer.unsubRecent = null;
+  timer.running = null;
+  timer.recent = [];
+  renderTimer();
+}
+
+function wireTimer() {
+  $("timer-stop").addEventListener("click", stopSession);
+  $("session-save").addEventListener("click", () => closeSessionSheet(true));
+  $("session-delete").addEventListener("click", deleteSheetSession);
+  $("session-sheet").addEventListener("click", (e) => { if (e.target.id === "session-sheet") closeSessionSheet(true); });
+  document.querySelectorAll("#focus-row button").forEach((b) => b.addEventListener("click", () => {
+    const on = b.getAttribute("aria-pressed") !== "true";
+    document.querySelectorAll("#focus-row button").forEach((x) => x.setAttribute("aria-pressed", "false"));
+    b.setAttribute("aria-pressed", String(on));
+  }));
+  $("stale-end").addEventListener("click", () => resolveStale(staleSession && staleSession.eventEnd));
+  $("stale-now").addEventListener("click", () => resolveStale(Date.now()));
+  $("stale-later").addEventListener("click", () => { $("stale-sheet").hidden = true; staleSession = null; });
+  $("stale-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const s = staleSession;
+    if (!s) return;
+    const [h, m] = ($("stale-time").value || "").split(":").map(Number);
+    if (isNaN(h) || isNaN(m)) { $("stale-error").textContent = "Pick a time."; return; }
+    // The stop time is on the start day, or the next day if it's earlier than the start
+    let end = new Date(s.start); end.setHours(h, m, 0, 0);
+    if (end.getTime() <= s.start) end = addDays(end, 1);
+    if (end.getTime() > Date.now()) { $("stale-error").textContent = "That time hasn't happened yet."; return; }
+    resolveStale(end.getTime());
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("session-sheet").hidden) closeSessionSheet(true);
+  });
+  // Coming back to the app after a while: check for a forgotten timer
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) renderTimer(); });
+}
+
 // ================================================================ START
 window.addEventListener("hashchange", showTab);
 showTab();
@@ -1218,6 +1456,7 @@ setInterval(() => { renderHeader(); renderCalendar(); }, 60 * 1000);
 wireSignIn();
 wireCalendar();
 wireCalendarTab();
+wireTimer();
 startData();
 
 if ("serviceWorker" in navigator) {

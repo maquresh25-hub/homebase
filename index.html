@@ -147,6 +147,52 @@
     </div>
   </div>
 
+  <!-- Running study timer: bottom of the sidebar on Mac, above the tab bar on iPhone -->
+  <div id="timer-bar" class="timer-bar" role="status" aria-live="off" hidden>
+    <span class="timer-dot" aria-hidden="true"></span>
+    <span class="timer-text"><span id="timer-label"></span><b id="timer-time">0:00</b></span>
+    <button type="button" id="timer-stop" class="timer-stop" aria-label="Stop study timer">Stop</button>
+  </div>
+
+  <!-- After a session: optional focus rating and note -->
+  <div id="session-sheet" class="sheet-backdrop" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="session-title">
+      <h2 id="session-title" class="sheet-big"></h2>
+      <p id="session-sub" class="muted-line flush"></p>
+      <p class="sheet-label">How focused were you? <span class="muted-line">(optional)</span></p>
+      <div id="focus-row" class="focus-row" role="group" aria-label="Focus rating">
+        <button type="button" data-v="1" aria-pressed="false">1</button>
+        <button type="button" data-v="2" aria-pressed="false">2</button>
+        <button type="button" data-v="3" aria-pressed="false">3</button>
+        <button type="button" data-v="4" aria-pressed="false">4</button>
+        <button type="button" data-v="5" aria-pressed="false">5</button>
+      </div>
+      <label for="session-note" class="sheet-label">Note <span class="muted-line">(optional)</span></label>
+      <input id="session-note" class="sheet-input" type="text" maxlength="500" placeholder="e.g. Finished Ch. 10 practice set">
+      <button type="button" id="session-save" class="btn-primary sheet-btn">Done</button>
+      <button type="button" id="session-delete" class="btn-link sheet-link">Delete this session</button>
+    </div>
+  </div>
+
+  <!-- Timer left running: ask when it stopped -->
+  <div id="stale-sheet" class="sheet-backdrop" hidden>
+    <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="stale-title">
+      <h2 id="stale-title" class="sheet-big">Still studying?</h2>
+      <p id="stale-text" class="flush"></p>
+      <button type="button" id="stale-end" class="btn-primary sheet-btn"></button>
+      <form id="stale-form" class="stale-form">
+        <label for="stale-time" class="sheet-label">I stopped at</label>
+        <div class="stale-row">
+          <input id="stale-time" class="sheet-input" type="time" required>
+          <button type="submit" class="nav-btn">Save</button>
+        </div>
+        <p id="stale-error" class="form-error" role="alert"></p>
+      </form>
+      <button type="button" id="stale-now" class="btn-link sheet-link">Stop it now instead</button>
+      <button type="button" id="stale-later" class="btn-link sheet-link">I'm still going</button>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   <script type="module" src="app.js"></script>
 </body>
