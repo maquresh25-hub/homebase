@@ -1,6 +1,6 @@
 // Homebase service worker: lets the app open instantly and work offline.
 // Change VERSION whenever app files change so phones pick up the update.
-const VERSION = "homebase-v2";
+const VERSION = "homebase-v3";
 const FILES = [
   "./", "index.html", "app.css", "app.js", "manifest.webmanifest",
   "icon-192.png", "icon-512.png", "apple-touch-icon.png",

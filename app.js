@@ -413,7 +413,11 @@ async function loadFirebase() {
     import(FB + "firebase-firestore.js"),
   ]);
   const app = appMod.initializeApp(firebaseConfig);
-  const auth = authMod.getAuth(app);
+  // initializeAuth (not getAuth) skips the hidden sign-in iframe that hangs
+  // in iPhone home-screen apps. Email + password sign-in doesn't need it.
+  const auth = authMod.initializeAuth(app, {
+    persistence: [authMod.indexedDBLocalPersistence, authMod.browserLocalPersistence],
+  });
   let db;
   try {
     // Keeps a copy on the device: the app opens instantly and works offline.
@@ -463,16 +467,27 @@ function stopTasks() {
 }
 
 async function startData() {
+  // Never sit on a blank screen: if sign-in hasn't answered in 10 s, say so.
+  let authAnswered = false;
+  const watchdog = setTimeout(() => {
+    if (authAnswered) return;
+    state.status = "error";
+    renderTasks();
+    toast("Homebase is taking too long to connect.", "Try again", () => location.reload());
+  }, 10000);
   try {
     await loadFirebase();
   } catch (e) {
     console.error(e);
+    clearTimeout(watchdog);
     state.status = "error";
     renderTasks();
     toast("Couldn't load Homebase. Check your connection.", "Try again", () => location.reload());
     return;
   }
   fb.onAuthStateChanged(fb.auth, (user) => {
+    authAnswered = true;
+    clearTimeout(watchdog);
     stopTasks();
     state.user = user;
     $("account-line").hidden = !user;
