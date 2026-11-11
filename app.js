@@ -34,6 +34,7 @@ const state = {
   calStatus: "none",  // none | loading | ready | error
   events: [],         // events from Google Calendar
   eventsAt: null,     // when they were fetched
+  doneEvents: new Set(), // calendar deadlines marked done (synced in Firestore)
 };
 let fb = null;        // loaded Firebase functions + instances
 let unsubscribeTasks = null;
@@ -563,6 +564,41 @@ function startTasks(user) {
   });
 }
 
+// Deadlines you've marked done live in users/{uid}/doneEvents, so both devices hide them.
+let unsubscribeDone = null;
+function startDone(user) {
+  const col = fb.collection(fb.db, "users", user.uid, "doneEvents");
+  unsubscribeDone = fb.onSnapshot(col, (snap) => {
+    state.doneEvents = new Set(snap.docs.map((d) => d.data()).filter((d) => d.done).map((d) => d.eventId));
+    renderCalendar();
+  }, (e) => console.warn("Couldn't load done deadlines:", e));
+}
+
+function stopDone() {
+  if (unsubscribeDone) unsubscribeDone();
+  unsubscribeDone = null;
+  state.doneEvents = new Set();
+}
+
+function doneRef(eventId) {
+  return fb.doc(fb.db, "users", state.user.uid, "doneEvents", encodeURIComponent(eventId).slice(0, 1400));
+}
+
+function setEventDone(ev, done) {
+  if (!fb || !state.user) return;
+  // Update the screen right away; Firestore syncs in the background (and offline).
+  if (done) state.doneEvents.add(ev.id); else state.doneEvents.delete(ev.id);
+  renderCalendar();
+  fb.setDoc(doneRef(ev.id), { eventId: ev.id, title: ev.title, done, updatedAt: Date.now() })
+    .catch((e) => { console.warn(e); toast("Couldn't save that. Try again."); });
+}
+
+function markEventDone(ev) {
+  playTick();
+  setEventDone(ev, true);
+  toast("Marked done", "Undo", () => setEventDone(ev, false));
+}
+
 function stopTasks() {
   if (unsubscribeTasks) unsubscribeTasks();
   unsubscribeTasks = null;
@@ -597,7 +633,8 @@ async function startData() {
     $("account-line").hidden = !user;
     $("account-email").textContent = user ? user.email : "";
     showSignIn(!user);
-    if (user) { startTasks(user); loadCalendarSettings(user); }
+    stopDone();
+    if (user) { startTasks(user); startDone(user); loadCalendarSettings(user); }
     else {
       renderTasks();
       state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
@@ -654,7 +691,24 @@ function normalize(raw) {
 
 function todaysEvents() {
   const s = startOfDay(new Date()).getTime(), e = s + 86400000;
-  return state.events.filter((ev) => ev.startMs < e && ev.endMs > s).sort((a, b) => a.startMs - b.startMs);
+  const today = state.events.filter((ev) => ev.startMs < e && ev.endMs > s && !state.doneEvents.has(ev.id));
+  return dedupe(today).sort((a, b) => a.startMs - b.startMs);
+}
+
+// The same event often comes from two calendars (e.g. "Veterans Day" from Holidays
+// and "Veterans Day – University Closed" from St. John's). Keep one of each.
+function simpleTitle(t) { return t.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
+function dedupe(events) {
+  const seen = new Map();
+  events.forEach((ev) => {
+    const key = (ev.allDay ? "d" : ev.startMs + "|" + ev.endMs) + "|" + simpleTitle(ev.title);
+    if (!seen.has(key)) seen.set(key, ev);
+  });
+  const list = [...seen.values()];
+  // All-day items: drop one whose title is just the start of a longer one on the same day.
+  return list.filter((ev) => !(ev.allDay && list.some((o) => o !== ev && o.allDay &&
+    o.startMs === ev.startMs && simpleTitle(o.title).length > simpleTitle(ev.title).length &&
+    simpleTitle(o.title).startsWith(simpleTitle(ev.title) + " "))));
 }
 
 // Group overlapping events into columns so nothing hides behind anything else
@@ -678,14 +732,26 @@ function renderAllDay(allDay, markers) {
   const box = $("allday");
   box.textContent = "";
   const items = [
-    ...allDay.map((e) => ({ text: e.title, cat: e.cat })),
-    ...markers.map((e) => ({ text: e.title + " · " + fmtTime(e.startMs), cat: e.cat })),
+    ...allDay.map((e) => ({ ev: e, text: e.title })),
+    ...markers.map((e) => ({ ev: e, text: e.title + " · " + fmtTime(e.startMs) })),
   ];
   box.hidden = items.length === 0;
-  items.forEach((it) => {
-    const chip = document.createElement("span");
-    chip.className = "chip cat-" + it.cat;
-    chip.textContent = it.text;
+  items.forEach(({ ev, text }) => {
+    // Quizzes and deadlines can be ticked off: tap to mark done and hide them.
+    const doable = ev.cat === "due";
+    const chip = document.createElement(doable ? "button" : "span");
+    chip.className = "chip cat-" + ev.cat + (doable ? " chip-done-able" : "");
+    if (doable) {
+      chip.type = "button";
+      chip.title = "Mark done";
+      chip.setAttribute("aria-label", text + ". Tap to mark done");
+      const box2 = document.createElement("span");
+      box2.className = "chip-check";
+      box2.setAttribute("aria-hidden", "true");
+      chip.appendChild(box2);
+      chip.addEventListener("click", () => markEventDone(ev));
+    }
+    chip.appendChild(document.createTextNode(text));
     box.appendChild(chip);
   });
 }
