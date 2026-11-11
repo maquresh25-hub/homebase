@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Homebase</title>
+  <meta name="theme-color" content="#F7F4EE" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#1A1A1C" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Homebase">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar on Mac, bottom bar on iPhone -->
+    <nav class="tabs" aria-label="Main">
+      <div class="brand">Homebase</div>
+      <a href="#today" data-tab="today"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6l1.4 1.4M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></svg><span>Today</span></a>
+      <a href="#calendar" data-tab="calendar"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg><span>Calendar</span></a>
+      <a href="#todo" data-tab="todo"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span>To-Do</span></a>
+      <a href="#study" data-tab="study"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5 12 4l8 3.5-8 3.5z"/><path d="M7 9.3V14c0 1.4 2.2 2.8 5 2.8s5-1.4 5-2.8V9.3M20 7.5V13"/></svg><span>Study</span></a>
+      <a href="#materials" data-tab="materials"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span>Materials</span></a>
+    </nav>
+
+    <main id="main">
+      <!-- TODAY -->
+      <section id="view-today" class="view" aria-labelledby="today-title">
+        <header class="day-head">
+          <h1 id="today-title" class="date"></h1>
+          <p class="summary" id="today-summary"></p>
+        </header>
+        <div class="today-grid">
+          <div class="card timeline-card">
+            <div class="timeline" id="timeline" aria-label="Today's timeline"></div>
+          </div>
+          <aside class="side">
+            <div class="card">
+              <h2>To-Do</h2>
+              <p class="empty">No tasks yet. Your list will show up here.</p>
+            </div>
+            <div class="card">
+              <h2>Upcoming exam</h2>
+              <p class="empty">No exams added yet.</p>
+            </div>
+          </aside>
+        </div>
+      </section>
+
+      <!-- OTHER TABS (filled in later steps) -->
+      <section id="view-calendar" class="view" hidden>
+        <header class="day-head"><h1 class="date">Calendar</h1></header>
+        <div class="card"><p class="empty">Your calendar isn't connected yet.</p></div>
+      </section>
+      <section id="view-todo" class="view" hidden>
+        <header class="day-head"><h1 class="date">To-Do</h1></header>
+        <div class="card"><p class="empty">No tasks yet.</p></div>
+      </section>
+      <section id="view-study" class="view" hidden>
+        <header class="day-head"><h1 class="date">Study</h1></header>
+        <div class="card"><p class="empty">Study tools are coming in a later version.</p></div>
+      </section>
+      <section id="view-materials" class="view" hidden>
+        <header class="day-head"><h1 class="date">Materials</h1></header>
+        <div class="card"><p class="empty">Materials are coming in a later version.</p></div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
