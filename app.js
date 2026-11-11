@@ -611,12 +611,18 @@ function categorize(ev) {
   const t = ev.title.toLowerCase();
   const cal = (ev.calendar || "").toLowerCase();
   if (/\b(study|review|prep|practice|revision)\b/.test(t)) return "study";       // yellow
-  if (/\b(exam|midterm|final|quiz|test)\b/.test(t)) return "exam";                // orange
+  if (/\b(exam|midterm|final)\b/.test(t)) return "exam";                          // orange: real exams only
+  if (/\b(quiz|assignment|homework|lab report|due)\b/.test(t)) return "due";     // grey: Canvas quizzes and deadlines
   if (cal.includes("extracurricular")) return "extra";                            // pink
   if (cal.includes("program")) return "programs";                                 // green
   if (/alim|ʿalim|qirat|qir'?at|qur'?an|hifz|tarteel|tajweed|tafsir|fiqh|hadith|arabic|jumu/.test(t) ||
       cal.includes("tarteel")) return "islamic";                                  // purple
   return "class";                                                                 // blue
+}
+
+// Canvas adds a course code like " [74358.202670]" to titles. Hide it.
+function cleanTitle(t) {
+  return t.replace(/\s*\[\d+(\.\d+)?\]\s*$/, "").replace(/\s+-\s+/g, " – ").trim() || t;
 }
 
 function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
@@ -639,7 +645,7 @@ function normalize(raw) {
       startMs = Date.parse(e.start);
       endMs = Date.parse(e.end || e.start);
     }
-    const ev = { id: String(e.id || e.title + e.start), title: e.title.slice(0, 200), allDay: !!e.allDay,
+    const ev = { id: String(e.id || e.title + e.start), title: cleanTitle(e.title).slice(0, 200), allDay: !!e.allDay,
       startMs, endMs, calendar: String(e.calendar || ""), location: String(e.location || "") };
     ev.cat = categorize(ev);
     return ev;
