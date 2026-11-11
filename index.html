@@ -52,6 +52,7 @@
         </header>
         <div class="today-grid">
           <div class="card timeline-card">
+            <div class="allday" id="allday" hidden></div>
             <div class="timeline" id="timeline" aria-label="Today's timeline"></div>
           </div>
           <aside class="side">
@@ -61,15 +62,28 @@
             </div>
             <div class="card">
               <h2>Upcoming exam</h2>
-              <p class="empty">No exams added yet.</p>
+              <div id="exam-card"><p class="empty">No exams in the next 30 days.</p></div>
             </div>
           </aside>
         </div>
       </section>
 
       <section id="view-calendar" class="view" hidden>
-        <header class="day-head"><h1 class="date">Calendar</h1></header>
-        <div class="card"><p class="empty">Your calendar isn't connected yet.</p></div>
+        <header class="day-head">
+          <h1 class="date">Calendar</h1>
+          <p class="summary" id="cal-status">&nbsp;</p>
+        </header>
+        <div class="card cal-connect">
+          <h2 id="cal-connect-title">Connect your Google Calendar</h2>
+          <p class="empty" id="cal-connect-help">Paste your private Homebase calendar link below.</p>
+          <form id="cal-form" class="cal-form" novalidate>
+            <label for="cal-url" class="sr-only">Calendar link</label>
+            <input id="cal-url" type="url" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://script.google.com/macros/s/…/exec?key=…">
+            <button type="submit" class="btn-primary" id="cal-btn">Connect</button>
+          </form>
+          <p id="cal-error" class="form-error" role="alert"></p>
+        </div>
+        <p class="empty cal-note">The full week view comes in the next update.</p>
       </section>
 
       <!-- TO-DO -->

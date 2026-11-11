@@ -1,4 +1,4 @@
-// Homebase app — v2: shell + sign-in + synced To-Do
+// Homebase app — v3: shell + sign-in + synced To-Do + Google Calendar timeline
 // Data lives in Firebase Firestore under users/{uid}/tasks/{taskId}.
 // Each task is its own document, so a change on one device never overwrites
 // other tasks, and nothing is ever hard-deleted (deleted tasks are flagged).
@@ -14,8 +14,10 @@ const firebaseConfig = {
   appId: "1:109987977650:web:21e09eeaa5e1f77710ecab",
 };
 
-const START_HOUR = 8;   // timeline starts 8 AM
-const END_HOUR = 22;    // and ends 10 PM
+const DEFAULT_START = 8;  // timeline normally runs 8 AM
+const DEFAULT_END = 22;   // to 10 PM, and stretches to fit earlier or later events
+const EVENTS_CACHE = "hb-events-v1";      // this device's copy of the last calendar fetch
+const REFRESH_MS = 10 * 60 * 1000;        // refetch the calendar every 10 minutes
 const TABS = ["today", "calendar", "todo", "study", "materials"];
 const MAX_TITLE = 200;
 const TODAY_LIMIT = 6;  // tasks shown on the Today card
@@ -28,6 +30,10 @@ const state = {
   user: null,
   tasks: [],          // non-deleted tasks
   showCompleted: false,
+  calUrl: null,       // private calendar link (stored in Firestore, never in the code)
+  calStatus: "none",  // none | loading | ready | error
+  events: [],         // events from Google Calendar
+  eventsAt: null,     // when they were fetched
 };
 let fb = null;        // loaded Firebase functions + instances
 let unsubscribeTasks = null;
@@ -54,14 +60,23 @@ function renderHeader() {
 
 // Every number shown must be real and match the screen.
 function renderSummary() {
-  let text = " ";
+  let taskText = "\u00a0";
   if (state.status === "ready") {
     const open = openTasks().length;
-    if (open > 0) text = open + (open === 1 ? " task" : " tasks");
-    else text = state.tasks.length ? "Nothing left to do" : "No tasks yet";
+    if (open > 0) taskText = open + (open === 1 ? " task" : " tasks");
+    else taskText = state.tasks.length ? "Nothing left to do" : "No tasks yet";
   }
-  $("today-summary").textContent = text;
-  $("todo-summary").textContent = text;
+  $("todo-summary").textContent = taskText;
+
+  const parts = [];
+  if (state.calStatus === "ready") {
+    const n = todaysEvents().filter((e) => !e.allDay && e.endMs - e.startMs >= 15 * 60000).length; // same blocks as the timeline
+    parts.push(n === 0 ? "Nothing on the calendar" : n + (n === 1 ? " event" : " events"));
+  }
+  if (state.status === "ready") parts.push(taskText);
+  const exam = nextExam();
+  if (exam) parts.push(exam.title + " " + daysLeftText(exam));
+  $("today-summary").textContent = parts.length ? parts.join(" · ") : "\u00a0";
 }
 
 function fmtHour(h) {
@@ -72,27 +87,83 @@ function fmtHour(h) {
 function renderTimeline() {
   const tl = $("timeline");
   const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
+  const today = todaysEvents();
+  const timed = today.filter((e) => !e.allDay && e.endMs - e.startMs >= 15 * 60000);
+  const markers = today.filter((e) => !e.allDay && e.endMs - e.startMs < 15 * 60000); // e.g. Canvas due times
+  renderAllDay(today.filter((e) => e.allDay), markers);
+
+  // Stretch the timeline to fit early or late events
+  let startH = DEFAULT_START, endH = DEFAULT_END;
+  const dayStart = startOfDay(new Date()).getTime();
+  timed.forEach((e) => {
+    const s = Math.max(0, (e.startMs - dayStart) / 3600000);
+    const en = Math.min(24, (e.endMs - dayStart) / 3600000);
+    startH = Math.min(startH, Math.floor(s));
+    endH = Math.max(endH, Math.ceil(en));
+  });
+  const y = (hours) => (hours - startH) * hourPx + 8;
+
   tl.textContent = "";
-  for (let h = START_HOUR; h <= END_HOUR; h++) {
+  tl.style.height = (endH - startH) * hourPx + 16 + "px";
+  for (let h = startH; h <= endH; h++) {
     const row = document.createElement("div");
     row.className = "hour";
-    row.style.top = (h - START_HOUR) * hourPx + 8 + "px";
+    row.style.top = y(h) + "px";
     const label = document.createElement("span");
-    label.textContent = fmtHour(h);
+    label.textContent = h === 24 ? "12 AM" : fmtHour(h);
     row.appendChild(label);
     tl.appendChild(row);
   }
-  const empty = document.createElement("p");
-  empty.className = "tl-empty";
-  empty.textContent = "Your calendar isn't connected yet.";
-  tl.appendChild(empty);
+
+  if (state.calStatus !== "ready" && state.calStatus !== "loading") {
+    const empty = document.createElement("p");
+    empty.className = "tl-empty";
+    if (state.calStatus === "error") {
+      empty.textContent = "Couldn't reach your calendar. ";
+      const retry = document.createElement("button");
+      retry.type = "button"; retry.className = "btn-link"; retry.textContent = "Try again";
+      retry.addEventListener("click", () => refreshEvents(true));
+      empty.appendChild(retry);
+    } else {
+      empty.textContent = "Your calendar isn't connected yet. ";
+      const link = document.createElement("a");
+      link.href = "#calendar"; link.textContent = "Connect it";
+      empty.appendChild(link);
+    }
+    tl.appendChild(empty);
+  } else if (state.calStatus === "ready" && timed.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "tl-empty";
+    empty.textContent = "Nothing scheduled today. Enjoy the open time.";
+    tl.appendChild(empty);
+  }
+
+  // Events, side by side when they overlap
+  layoutColumns(timed).forEach(({ ev, col, cols }) => {
+    const s = Math.max(startH, (ev.startMs - dayStart) / 3600000);
+    const en = Math.min(endH, (ev.endMs - dayStart) / 3600000);
+    const block = document.createElement("div");
+    block.className = "event cat-" + ev.cat;
+    block.style.top = y(s) + 1 + "px";
+    block.style.height = Math.max(22, (en - s) * hourPx - 3) + "px";
+    block.style.left = "calc(76px + (100% - 76px) * " + col / cols + ")";
+    block.style.width = "calc((100% - 76px) / " + cols + " - 4px)";
+    const title = document.createElement("strong");
+    title.textContent = ev.title;
+    const time = document.createElement("span");
+    time.textContent = fmtTime(ev.startMs) + " – " + fmtTime(ev.endMs);
+    block.append(title, time);
+    block.title = ev.title + "\n" + time.textContent + (ev.location ? "\n" + ev.location : "");
+    if ((en - s) * hourPx < 40) block.classList.add("short");
+    tl.appendChild(block);
+  });
 
   const now = new Date();
   const hours = now.getHours() + now.getMinutes() / 60;
-  if (hours >= START_HOUR && hours <= END_HOUR) {
+  if (hours >= startH && hours <= endH) {
     const line = document.createElement("div");
     line.className = "now";
-    line.style.top = (hours - START_HOUR) * hourPx + 8 + "px";
+    line.style.top = y(hours) + "px";
     const b = document.createElement("b");
     b.textContent = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
     line.appendChild(b);
@@ -469,6 +540,7 @@ async function loadFirebase() {
     collection: fsMod.collection,
     doc: fsMod.doc,
     setDoc: fsMod.setDoc,
+    getDoc: fsMod.getDoc,
     updateDoc: fsMod.updateDoc,
     onSnapshot: fsMod.onSnapshot,
   };
@@ -525,9 +597,259 @@ async function startData() {
     $("account-line").hidden = !user;
     $("account-email").textContent = user ? user.email : "";
     showSignIn(!user);
-    if (user) startTasks(user);
-    else renderTasks();
+    if (user) { startTasks(user); loadCalendarSettings(user); }
+    else {
+      renderTasks();
+      state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
+    }
   });
+}
+
+// ================================================================ CALENDAR
+// Colours follow the Homebase Design Guide.
+function categorize(ev) {
+  const t = ev.title.toLowerCase();
+  const cal = (ev.calendar || "").toLowerCase();
+  if (/\b(study|review|prep|practice|revision)\b/.test(t)) return "study";       // yellow
+  if (/\b(exam|midterm|final|quiz|test)\b/.test(t)) return "exam";                // orange
+  if (cal.includes("extracurricular")) return "extra";                            // pink
+  if (cal.includes("program")) return "programs";                                 // green
+  if (/alim|ʿalim|qirat|qir'?at|qur'?an|hifz|tarteel|tajweed|tafsir|fiqh|hadith|arabic|jumu/.test(t) ||
+      cal.includes("tarteel")) return "islamic";                                  // purple
+  return "class";                                                                 // blue
+}
+
+function startOfDay(d) { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; }
+
+function fmtTime(ms) {
+  return new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(":00", "");
+}
+
+// Turn raw events from the script into ones the app can draw
+function normalize(raw) {
+  return (raw || []).filter((e) => e && typeof e.title === "string" && e.start).map((e) => {
+    let startMs, endMs;
+    if (e.allDay) {
+      const [y, m, d] = e.start.split("-").map(Number);
+      const [y2, m2, d2] = (e.end || e.start).split("-").map(Number);
+      startMs = new Date(y, m - 1, d).getTime();
+      endMs = new Date(y2, m2 - 1, d2).getTime();
+      if (endMs <= startMs) endMs = startMs + 86400000;
+    } else {
+      startMs = Date.parse(e.start);
+      endMs = Date.parse(e.end || e.start);
+    }
+    const ev = { id: String(e.id || e.title + e.start), title: e.title.slice(0, 200), allDay: !!e.allDay,
+      startMs, endMs, calendar: String(e.calendar || ""), location: String(e.location || "") };
+    ev.cat = categorize(ev);
+    return ev;
+  }).filter((e) => !isNaN(e.startMs) && !isNaN(e.endMs));
+}
+
+function todaysEvents() {
+  const s = startOfDay(new Date()).getTime(), e = s + 86400000;
+  return state.events.filter((ev) => ev.startMs < e && ev.endMs > s).sort((a, b) => a.startMs - b.startMs);
+}
+
+// Group overlapping events into columns so nothing hides behind anything else
+function layoutColumns(events) {
+  const sorted = [...events].sort((a, b) => a.startMs - b.startMs || b.endMs - a.endMs);
+  const out = [];
+  let cluster = [], clusterEnd = -1, colEnds = [];
+  const flush = () => { const cols = colEnds.length; cluster.forEach((c) => out.push({ ...c, cols })); cluster = []; colEnds = []; };
+  sorted.forEach((ev) => {
+    if (ev.startMs >= clusterEnd && cluster.length) flush();
+    let col = colEnds.findIndex((end) => end <= ev.startMs);
+    if (col === -1) { col = colEnds.length; colEnds.push(ev.endMs); } else colEnds[col] = ev.endMs;
+    cluster.push({ ev, col });
+    clusterEnd = Math.max(clusterEnd, ev.endMs);
+  });
+  if (cluster.length) flush();
+  return out;
+}
+
+function renderAllDay(allDay, markers) {
+  const box = $("allday");
+  box.textContent = "";
+  const items = [
+    ...allDay.map((e) => ({ text: e.title, cat: e.cat })),
+    ...markers.map((e) => ({ text: e.title + " · " + fmtTime(e.startMs), cat: e.cat })),
+  ];
+  box.hidden = items.length === 0;
+  items.forEach((it) => {
+    const chip = document.createElement("span");
+    chip.className = "chip cat-" + it.cat;
+    chip.textContent = it.text;
+    box.appendChild(chip);
+  });
+}
+
+function nextExam() {
+  if (state.calStatus !== "ready") return null;
+  const now = Date.now();
+  return state.events
+    .filter((e) => e.cat === "exam" && e.endMs > now)
+    .sort((a, b) => a.startMs - b.startMs)[0] || null;
+}
+
+function daysLeft(ev) {
+  return Math.round((startOfDay(new Date(ev.startMs)) - startOfDay(new Date())) / 86400000);
+}
+
+function daysLeftText(ev) {
+  const d = daysLeft(ev);
+  return d <= 0 ? "today" : d === 1 ? "tomorrow" : "in " + d + " days";
+}
+
+function renderExamCard() {
+  const host = $("exam-card");
+  host.textContent = "";
+  if (state.calStatus === "loading" && !state.events.length) return skeleton(host);
+  const exam = nextExam();
+  if (!exam) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = state.calStatus === "ready" ? "No exams in the next 30 days." : "Connect your calendar to see exams.";
+    host.appendChild(p);
+    return;
+  }
+  const name = document.createElement("p");
+  name.className = "exam-name";
+  name.textContent = exam.title;
+  const d = daysLeft(exam);
+  const big = document.createElement("p");
+  big.className = "exam-days";
+  big.textContent = d <= 0 ? "Today" : d === 1 ? "Tomorrow" : d + " days";
+  const when = document.createElement("p");
+  when.className = "empty";
+  when.textContent = new Date(exam.startMs).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) +
+    (exam.allDay ? "" : " · " + fmtTime(exam.startMs));
+  host.append(name, big, when);
+}
+
+function renderCalendarTab() {
+  const connected = !!state.calUrl;
+  $("cal-connect-title").textContent = connected ? "Google Calendar connected" : "Connect your Google Calendar";
+  $("cal-connect-help").textContent = connected
+    ? "To change it, paste a new link and press Update."
+    : "Paste your private Homebase calendar link below.";
+  $("cal-btn").textContent = connected ? "Update" : "Connect";
+  let status = " ";
+  if (state.calStatus === "ready" && state.eventsAt) status = "Updated " + fmtTime(state.eventsAt);
+  else if (state.calStatus === "loading") status = "Updating…";
+  else if (state.calStatus === "error") status = "Couldn't reach your calendar";
+  $("cal-status").textContent = status;
+}
+
+let scrolledToNow = false;
+function renderCalendar() {
+  const line = renderTimeline();
+  if (state.calStatus === "ready" && !scrolledToNow) { scrollToNow(line); scrolledToNow = true; }
+  renderExamCard();
+  renderCalendarTab();
+  renderSummary();
+}
+
+function cacheKey() { return EVENTS_CACHE + ":" + (state.user ? state.user.uid : ""); }
+
+function loadCachedEvents() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(cacheKey()) || "null");
+    if (raw && Array.isArray(raw.events)) {
+      state.events = normalize(raw.events);
+      state.eventsAt = raw.at || null;
+      state.calStatus = "ready";
+    }
+  } catch (e) { /* ignore a bad cache */ }
+}
+
+let fetching = false;
+async function refreshEvents(showLoading) {
+  if (!state.calUrl || fetching) return;
+  fetching = true;
+  if (showLoading || !state.events.length) { state.calStatus = "loading"; renderCalendar(); }
+  try {
+    const res = await fetch(state.calUrl, { cache: "no-store" });
+    const data = await res.json();
+    if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error((data && data.error) || "bad response");
+    state.events = normalize(data.events);
+    state.eventsAt = Date.now();
+    state.calStatus = "ready";
+    try { localStorage.setItem(cacheKey(), JSON.stringify({ at: state.eventsAt, events: data.events })); } catch (e) {}
+  } catch (e) {
+    console.warn("Calendar fetch failed:", e);
+    // Keep showing the last good copy if there is one
+    state.calStatus = state.events.length ? "ready" : "error";
+    if (state.events.length && showLoading) toast("Couldn't refresh your calendar. Showing the last saved copy.");
+  } finally {
+    fetching = false;
+    renderCalendar();
+  }
+}
+
+function validCalUrl(u) {
+  try {
+    const url = new URL(u);
+    return url.protocol === "https:" && url.hostname === "script.google.com" &&
+      /\/exec$/.test(url.pathname) && (url.searchParams.get("key") || "").length >= 32;
+  } catch (e) { return false; }
+}
+
+async function loadCalendarSettings(user) {
+  state.calUrl = null; state.events = []; state.eventsAt = null; state.calStatus = "none";
+  loadCachedEvents();
+  renderCalendar();
+  try {
+    const snap = await fb.getDoc(fb.doc(fb.db, "users", user.uid, "settings", "calendar"));
+    const url = snap.exists() ? snap.data().url : null;
+    state.calUrl = url && validCalUrl(url) ? url : null;
+  } catch (e) {
+    console.warn("Couldn't read calendar settings:", e);
+  }
+  if (!state.calUrl) { state.calStatus = state.events.length ? "ready" : "none"; renderCalendar(); return; }
+  refreshEvents(false);
+}
+
+function wireCalendar() {
+  $("cal-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const err = $("cal-error");
+    err.textContent = "";
+    const url = $("cal-url").value.trim();
+    if (!validCalUrl(url)) {
+      err.textContent = "That doesn't look like your Homebase link. It should start with https://script.google.com/ and end with ?key= and a long code.";
+      return;
+    }
+    if (!fb || !state.user) { err.textContent = "Sign in first."; return; }
+    const btn = $("cal-btn");
+    btn.disabled = true;
+    try {
+      // Check the link works before saving it
+      const res = await fetch(url, { cache: "no-store" });
+      const data = await res.json();
+      if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error("bad key");
+      await fb.setDoc(fb.doc(fb.db, "users", state.user.uid, "settings", "calendar"), { url, updatedAt: Date.now() });
+      state.calUrl = url;
+      $("cal-url").value = "";
+      state.events = normalize(data.events);
+      state.eventsAt = Date.now();
+      state.calStatus = "ready";
+      try { localStorage.setItem(cacheKey(), JSON.stringify({ at: state.eventsAt, events: data.events })); } catch (e2) {}
+      renderCalendar();
+      toast("Calendar connected.");
+      location.hash = "#today";
+    } catch (ex) {
+      console.warn(ex);
+      err.textContent = "Couldn't connect with that link. Check you copied all of it, then try again.";
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  // Refresh when the app comes back to the front, and every 10 minutes
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && state.eventsAt && Date.now() - state.eventsAt > 60000) refreshEvents(false);
+  });
+  setInterval(() => refreshEvents(false), REFRESH_MS);
 }
 
 // ================================================================ START
@@ -536,8 +858,10 @@ showTab();
 renderHeader();
 renderTasks();
 scrollToNow(renderTimeline());
-setInterval(() => { renderHeader(); renderTimeline(); }, 60 * 1000);
+renderCalendar();
+setInterval(() => { renderHeader(); renderCalendar(); }, 60 * 1000);
 wireSignIn();
+wireCalendar();
 startData();
 
 if ("serviceWorker" in navigator) {
