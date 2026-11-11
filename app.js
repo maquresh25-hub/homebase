@@ -696,6 +696,9 @@ function normalize(raw) {
     const ev = { id: String(e.id || e.title + e.start), title: cleanTitle(e.title).slice(0, 200), allDay: !!e.allDay,
       startMs, endMs, calendar: String(e.calendar || ""), location: String(e.location || "") };
     ev.cat = categorize(ev);
+    // "Quiz"/"due" only means a deadline when it's all-day or a due-time marker.
+    // A real time block like "Chemistry Recitation + Quiz" is a class.
+    if (ev.cat === "due" && !ev.allDay && ev.endMs - ev.startMs >= 15 * 60000) ev.cat = "class";
     return ev;
   }).filter((e) => !isNaN(e.startMs) && !isNaN(e.endMs));
 }
