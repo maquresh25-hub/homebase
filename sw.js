@@ -1,13 +1,13 @@
 // Homebase service worker: lets the app open instantly and work offline.
 // Change VERSION whenever app files change so phones pick up the update.
-const VERSION = "homebase-v6";
+const VERSION = "homebase-v7";
 const FILES = [
   "./", "index.html", "app.css", "app.js", "manifest.webmanifest",
   "icon-192.png", "icon-512.png", "apple-touch-icon.png",
 ];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: "reload" })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (e) => {
@@ -34,8 +34,10 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (url.origin !== location.origin) return;
+  // "no-cache" makes the browser check GitHub for a newer copy every time,
+  // so updates show up right away instead of up to 10 minutes later.
   e.respondWith(
-    fetch(e.request)
+    fetch(e.request.mode === "navigate" ? e.request.url : e.request, { cache: "no-cache" })
       .then((res) => {
         const copy = res.clone();
         caches.open(VERSION).then((c) => c.put(e.request, copy));
