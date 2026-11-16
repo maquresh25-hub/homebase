@@ -1,4 +1,4 @@
-// Homebase app — v4: shell + sign-in + synced To-Do + Google Calendar timeline + week view
+// Homebase app — v5: shell + sign-in + synced To-Do + Google Calendar timeline + week view + study timer
 // Data lives in Firebase Firestore under users/{uid}/tasks/{taskId}.
 // Each task is its own document, so a change on one device never overwrites
 // other tasks, and nothing is ever hard-deleted (deleted tasks are flagged).
@@ -35,6 +35,8 @@ const state = {
   events: [],         // events from Google Calendar
   eventsAt: null,     // when they were fetched
   doneEvents: new Set(), // calendar deadlines marked done (synced in Firestore)
+  doneList: [],          // the same deadlines with titles, for the "Done deadlines" list
+  showDoneDeadlines: false,
   range: null,        // [startMs, endMs] the main copy covers
 };
 let fb = null;        // loaded Firebase functions + instances
@@ -44,6 +46,7 @@ let unsubscribeTasks = null;
 function showTab() {
   const hash = location.hash.slice(1);
   const tab = TABS.includes(hash) ? hash : "today";
+  rememberGridScroll();   // before the Calendar tab is hidden, note where its week grid was scrolled to
   TABS.forEach((t) => {
     $("view-" + t).hidden = t !== tab;
     const link = document.querySelector('[data-tab="' + t + '"]');
@@ -51,6 +54,8 @@ function showTab() {
     if (t === tab) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+  if (tab === "calendar") renderCalendarTab();
+  else cal.gridLive = false;
 }
 
 function renderHeader() {
@@ -124,7 +129,8 @@ function drawDay(tl, alldayBox, date, opts) {
     }
     tl.appendChild(p);
   };
-  if (state.calStatus === "error" && !timed.length) emptyMsg("Couldn't reach your calendar. ", "Try again", () => refreshEvents(true));
+  if (opts.failed) emptyMsg("Couldn't load this week. ", "Try again", opts.onRetry);
+  else if (state.calStatus === "error" && !timed.length) emptyMsg("Couldn't reach your calendar. ", "Try again", () => refreshEvents(true));
   else if (state.calStatus === "none") emptyMsg("Your calendar isn't connected yet. ", "Connect it", null, "#calendar");
   else if (opts.loading) emptyMsg("Loading…");
   else if (state.calStatus === "ready" && timed.length === 0) emptyMsg(opts.emptyText || "Nothing scheduled.");
@@ -322,6 +328,12 @@ function toggleTask(task) {
   save(fb.updateDoc(taskRef(task.id), { done, doneAt: done ? Date.now() : null, updatedAt: Date.now() }));
 }
 
+function renameTask(task, raw) {
+  const title = raw.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE);
+  if (!title || title === task.title) return;
+  save(fb.updateDoc(taskRef(task.id), { title, updatedAt: Date.now() }));
+}
+
 function deleteTask(task) {
   save(fb.updateDoc(taskRef(task.id), { deleted: true, deletedAt: Date.now(), updatedAt: Date.now() }));
   toast("Task deleted", "Undo", () => {
@@ -350,8 +362,12 @@ function taskItem(task) {
     setTimeout(() => toggleTask(task), task.done ? 0 : 260);
   });
 
+  // Tap the name to rename the task
   const text = document.createElement("span");
   text.className = "task-title";
+  text.tabIndex = 0;
+  text.setAttribute("role", "button");
+  text.setAttribute("aria-label", "Rename: " + task.title);
   const [name, detail] = splitTitle(task.title);
   text.textContent = name;
   if (detail) {
@@ -360,6 +376,10 @@ function taskItem(task) {
     d.textContent = " " + detail;
     text.appendChild(d);
   }
+  text.addEventListener("click", () => editTask(task, text));
+  text.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); editTask(task, text); }
+  });
 
   const del = document.createElement("button");
   del.type = "button";
@@ -371,6 +391,31 @@ function taskItem(task) {
   li.append(check, text, del);
   return li;
 }
+
+// Swap the task name for a text box. Return or tapping away saves; Escape cancels.
+function editTask(task, titleEl) {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "task-edit";
+  input.maxLength = MAX_TITLE;
+  input.value = task.title;
+  input.setAttribute("aria-label", "Task name");
+  input.enterKeyHint = "done";
+  let cancelled = false;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    if (e.key === "Escape") { cancelled = true; input.blur(); }
+  });
+  input.addEventListener("blur", () => {
+    if (!cancelled) renameTask(task, input.value);
+    input.classList.remove("task-edit");   // typing is over, so drawing is allowed again
+    renderTasks();   // redraw now that typing is over (also picks up changes that arrived meanwhile)
+  });
+  titleEl.replaceWith(input);
+  input.focus();
+  input.select();
+}
+const isEditingTask = () => !!(document.activeElement && document.activeElement.classList.contains("task-edit"));
 
 function addForm(placeholder) {
   const form = document.createElement("form");
@@ -480,9 +525,53 @@ function renderTodoPage() {
       host.appendChild(ul);
     }
   }
+
+  // Calendar deadlines you marked done (last 30 days). Untick one to put it back on the calendar.
+  const deadlines = recentDoneDeadlines();
+  if (deadlines.length) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "completed-toggle";
+    toggle.setAttribute("aria-expanded", String(state.showDoneDeadlines));
+    toggle.textContent = (state.showDoneDeadlines ? "▾ " : "▸ ") + "Done deadlines " + deadlines.length;
+    toggle.addEventListener("click", () => { state.showDoneDeadlines = !state.showDoneDeadlines; renderTodoPage(); });
+    host.appendChild(toggle);
+    if (state.showDoneDeadlines) {
+      const ul = document.createElement("ul");
+      ul.className = "tasks";
+      deadlines.forEach((d) => ul.appendChild(deadlineItem(d)));
+      host.appendChild(ul);
+    }
+  }
+}
+
+const DONE_DEADLINE_DAYS = 30;
+function recentDoneDeadlines() {
+  const since = Date.now() - DONE_DEADLINE_DAYS * 86400000;
+  return state.doneList.filter((d) => (d.updatedAt || 0) >= since).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+}
+
+function deadlineItem(d) {
+  const li = document.createElement("li");
+  li.className = "task is-done";
+  const check = document.createElement("button");
+  check.type = "button";
+  check.className = "check";
+  check.setAttribute("aria-label", "Put back on the calendar: " + d.title);
+  check.setAttribute("aria-pressed", "true");
+  check.addEventListener("click", () => {
+    setEventDone({ id: d.eventId, title: d.title }, false);
+    toast("Back on your calendar", "Undo", () => setEventDone({ id: d.eventId, title: d.title }, true));
+  });
+  const text = document.createElement("span");
+  text.className = "task-title";
+  text.textContent = d.title;
+  li.append(check, text);
+  return li;
 }
 
 function renderTasks() {
+  if (isEditingTask()) return;   // don't wipe the text box mid-typing; it redraws when typing ends
   renderTodayCard();
   renderTodoPage();
   renderSummary();
@@ -607,8 +696,11 @@ let unsubscribeDone = null;
 function startDone(user) {
   const col = fb.collection(fb.db, "users", user.uid, "doneEvents");
   unsubscribeDone = fb.onSnapshot(col, (snap) => {
-    state.doneEvents = new Set(snap.docs.map((d) => d.data()).filter((d) => d.done).map((d) => d.eventId));
+    state.doneList = snap.docs.map((d) => d.data()).filter((d) => d.done && d.eventId)
+      .map((d) => ({ eventId: String(d.eventId), title: String(d.title || "Deadline"), updatedAt: d.updatedAt || 0 }));
+    state.doneEvents = new Set(state.doneList.map((d) => d.eventId));
     renderCalendar();
+    if (!isEditingTask()) renderTodoPage();
   }, (e) => console.warn("Couldn't load done deadlines:", e));
 }
 
@@ -616,6 +708,7 @@ function stopDone() {
   if (unsubscribeDone) unsubscribeDone();
   unsubscribeDone = null;
   state.doneEvents = new Set();
+  state.doneList = [];
 }
 
 function doneRef(eventId) {
@@ -625,8 +718,11 @@ function doneRef(eventId) {
 function setEventDone(ev, done) {
   if (!fb || !state.user) return;
   // Update the screen right away; Firestore syncs in the background (and offline).
-  if (done) state.doneEvents.add(ev.id); else state.doneEvents.delete(ev.id);
+  state.doneList = state.doneList.filter((d) => d.eventId !== ev.id);
+  if (done) { state.doneEvents.add(ev.id); state.doneList.push({ eventId: ev.id, title: ev.title, updatedAt: Date.now() }); }
+  else state.doneEvents.delete(ev.id);
   renderCalendar();
+  if (!isEditingTask()) renderTodoPage();
   fb.setDoc(doneRef(ev.id), { eventId: ev.id, title: ev.title, done, updatedAt: Date.now() })
     .catch((e) => { console.warn(e); toast("Couldn't save that. Try again."); });
 }
@@ -779,26 +875,28 @@ function renderAllDay(box, allDay, markers) {
     ...markers.map((e) => ({ ev: e, text: e.title + " · " + fmtTime(e.startMs) })),
   ];
   box.hidden = items.length === 0;
-  items.forEach(({ ev, text }) => {
-    const chip = document.createElement("button");
-    chip.type = "button";
-    // Quizzes and deadlines: tap to mark done and hide them. Everything else: tap for details.
-    const doable = ev.cat === "due";
-    chip.className = "chip cat-" + ev.cat + (doable ? " chip-done-able" : "");
-    if (doable) {
-      chip.title = "Mark done";
-      chip.setAttribute("aria-label", text + ". Tap to mark done");
-      const check = document.createElement("span");
-      check.className = "chip-check";
-      check.setAttribute("aria-hidden", "true");
-      chip.appendChild(check);
-      chip.addEventListener("click", () => markEventDone(ev));
-    } else {
-      chip.addEventListener("click", () => openEventSheet(ev));
-    }
-    chip.appendChild(document.createTextNode(text));
-    box.appendChild(chip);
-  });
+  items.forEach(({ ev, text }) => box.appendChild(eventChip(ev, text)));
+}
+
+// Quizzes and deadlines: tap to mark done and hide them. Everything else: tap for details.
+function eventChip(ev, text) {
+  const chip = document.createElement("button");
+  chip.type = "button";
+  const doable = ev.cat === "due";
+  chip.className = "chip cat-" + ev.cat + (doable ? " chip-done-able" : "");
+  if (doable) {
+    chip.title = "Mark done";
+    chip.setAttribute("aria-label", text + ". Tap to mark done");
+    const check = document.createElement("span");
+    check.className = "chip-check";
+    check.setAttribute("aria-hidden", "true");
+    chip.appendChild(check);
+    chip.addEventListener("click", () => markEventDone(ev));
+  } else {
+    chip.addEventListener("click", () => openEventSheet(ev));
+  }
+  chip.appendChild(document.createTextNode(text));
+  return chip;
 }
 
 function nextExam() {
@@ -852,7 +950,12 @@ const cal = {
   selected: startOfDay(new Date()),
   cache: new Map(),       // weekStart ms -> events fetched for weeks outside the main range
   loadingWeeks: new Set(),
+  failed: new Map(),      // weekStart ms -> when its fetch last failed
+  gridHour: null,         // hour at the top of the Mac week grid, kept across redraws
+  gridStartH: 0,          // first hour the grid currently shows
+  gridLive: false,        // true while the grid on screen holds a real scroll position
 };
+const WEEK_RETRY_MS = 60 * 1000;   // a week that failed to load is retried after a minute
 
 function startOfWeek(d) { const x = startOfDay(d); x.setDate(x.getDate() - x.getDay()); return x; } // Sunday
 function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
@@ -864,8 +967,18 @@ function weekEvents(weekStart) {
   const s = weekStart.getTime(), e = addDays(weekStart, 7).getTime();
   if (state.range && s >= state.range[0] && e <= state.range[1]) return { events: state.events, loading: false };
   if (cal.cache.has(s)) return { events: cal.cache.get(s), loading: false };
-  if (state.calUrl && !cal.loadingWeeks.has(s)) fetchWeek(weekStart);
-  return { events: [], loading: !!state.calUrl };
+  if (cal.loadingWeeks.has(s)) return { events: [], loading: true };
+  // After a failed load, show "Try again" rather than an empty week, and retry by itself a minute later
+  const failedAt = cal.failed.get(s);
+  if (failedAt && Date.now() - failedAt < WEEK_RETRY_MS) return { events: [], loading: false, failed: true };
+  if (!state.calUrl) return { events: [], loading: false };
+  fetchWeek(weekStart);
+  return { events: [], loading: true };
+}
+
+function retryWeek() {
+  cal.failed.delete(cal.weekStart.getTime());
+  renderCalendarTab();
 }
 
 async function fetchWeek(weekStart) {
@@ -874,10 +987,11 @@ async function fetchWeek(weekStart) {
   try {
     const data = await fetchCalendar(ymd(weekStart), ymd(addDays(weekStart, 7)));
     cal.cache.set(s, normalize(data.events));
+    cal.failed.delete(s);
   } catch (e) {
     console.warn("Week fetch failed:", e);
-    toast("Couldn't load that week. Check your connection.");
-    cal.cache.set(s, []);
+    if (!cal.failed.has(s)) toast("Couldn't load that week. Check your connection.");
+    cal.failed.set(s, Date.now());   // not saved as an empty week: the screen offers "Try again"
   } finally {
     cal.loadingWeeks.delete(s);
     renderCalendarTab();
@@ -901,19 +1015,24 @@ function renderCalendarTab() {
   else if (state.calStatus === "error") status = "Couldn't reach your calendar";
   $("cal-status").textContent = status;
   if ($("cal-views").hidden) return;
+  // Only draw the week while the Calendar tab is open (showTab draws it on opening).
+  // A hidden grid can't hold a scroll position, and redrawing it every minute is wasted work.
+  if ($("view-calendar").hidden) return;
 
-  const { events, loading } = weekEvents(ws);
+  const { events, loading, failed } = weekEvents(ws);
   const prev = state.events;
   state.events = events;            // drawing helpers read state.events; restore right after
   try {
-    if (narrow.matches) renderPhoneWeek(loading);
-    else renderWeekGrid(loading);
+    if (narrow.matches) renderPhoneWeek(loading, failed);
+    else renderWeekGrid(loading, failed);
   } finally {
     state.events = prev;
   }
 }
 
-function renderPhoneWeek(loading) {
+function renderPhoneWeek(loading, failed) {
+  rememberGridScroll();
+  cal.gridLive = false;
   $("week-grid").hidden = true;
   $("phone-week").hidden = false;
   if (!sameDay(startOfWeek(cal.selected), cal.weekStart)) {
@@ -938,12 +1057,22 @@ function renderPhoneWeek(loading) {
     strip.appendChild(btn);
   }
   $("day-title").textContent = cal.selected.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
-  const line = drawDay($("day-timeline"), $("day-allday"), cal.selected, { loading, emptyText: "Nothing scheduled." });
+  const line = drawDay($("day-timeline"), $("day-allday"), cal.selected, { loading, failed, onRetry: retryWeek, emptyText: "Nothing scheduled." });
   if (line && !cal.scrolledPhone) { scrollToNow(line); cal.scrolledPhone = true; }
 }
 
-function renderWeekGrid(loading) {
+// The week grid is rebuilt every minute and on every sync. Note which hour is at the top
+// of it first, so the rebuilt grid can go back to the same place.
+function rememberGridScroll() {
+  const old = $("week-grid").querySelector(".wk-scroll");
+  if (!old || !cal.gridLive || old.clientHeight === 0) return;
+  const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
+  cal.gridHour = cal.gridStartH + old.scrollTop / hourPx;
+}
+
+function renderWeekGrid(loading, failed) {
   $("phone-week").hidden = true;
+  rememberGridScroll();
   const host = $("week-grid");
   host.hidden = false;
   host.textContent = "";
@@ -983,14 +1112,7 @@ function renderWeekGrid(loading) {
     row.appendChild(document.createElement("div"));
     chipsByDay.forEach((list) => {
       const cell = document.createElement("div");
-      list.forEach((e) => {
-        const chip = document.createElement("button");
-        chip.type = "button";
-        chip.className = "chip cat-" + e.cat;
-        chip.textContent = e.allDay ? e.title : e.title + " · " + fmtTime(e.startMs);
-        chip.addEventListener("click", () => openEventSheet(e));
-        cell.appendChild(chip);
-      });
+      list.forEach((e) => cell.appendChild(eventChip(e, e.allDay ? e.title : e.title + " · " + fmtTime(e.startMs))));
       row.appendChild(cell);
     });
     host.appendChild(row);
@@ -1038,20 +1160,33 @@ function renderWeekGrid(loading) {
     }
     body.appendChild(col);
   });
-  if (loading) {
+  if (loading || failed) {
     const p = document.createElement("p");
     p.className = "tl-empty";
-    p.textContent = "Loading this week…";
+    p.textContent = loading ? "Loading this week…" : "Couldn't load this week. ";
+    if (!loading) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "btn-link";
+      retry.textContent = "Try again";
+      retry.addEventListener("click", retryWeek);
+      p.appendChild(retry);
+    }
     body.appendChild(p);
   }
   scroller.appendChild(body);
   host.appendChild(scroller);
-  // Open at 8 AM so mornings are visible; later in the day, keep the "now" line in view
-  requestAnimationFrame(() => {
-    let target = y(Math.max(startH, 8)) - 8;
+  // Put the grid back where you had scrolled to (straight away, so there's no visible jump).
+  // First time: open at 8 AM so mornings are visible; later in the day, keep the "now" line in view.
+  let target;
+  if (cal.gridHour !== null) target = y(cal.gridHour) - 8;
+  else {
+    target = y(Math.max(startH, 8)) - 8;
     if (nowLine && nowLine.offsetTop > target + scroller.clientHeight - 80) target = nowLine.offsetTop - scroller.clientHeight / 2;
-    scroller.scrollTop = Math.max(0, target);
-  });
+  }
+  scroller.scrollTop = Math.max(0, target);
+  cal.gridStartH = startH;
+  cal.gridLive = true;
 }
 
 // ---------- Event details (opens on tap) ----------
@@ -1075,7 +1210,9 @@ function wireCalendarTab() {
   $("wk-prev").addEventListener("click", () => go(-7));
   $("wk-next").addEventListener("click", () => go(7));
   $("wk-today").addEventListener("click", () => {
-    cal.weekStart = startOfWeek(new Date()); cal.selected = startOfDay(new Date()); renderCalendarTab();
+    cal.weekStart = startOfWeek(new Date()); cal.selected = startOfDay(new Date());
+    cal.gridHour = null; cal.gridLive = false;   // jump back to the usual spot (8 AM, or the "now" line)
+    renderCalendarTab();
   });
   narrow.addEventListener("change", renderCalendarTab);
   $("cal-settings").addEventListener("click", () => {
@@ -1127,11 +1264,19 @@ function mainRange() {
   return [from, to];
 }
 
+// Give up after 20 s. Without this, one request that never answers would block every later refresh.
+const FETCH_TIMEOUT_MS = 20000;
 async function fetchCalendar(from, to, url) {
-  const res = await fetch((url || state.calUrl) + "&from=" + from + "&to=" + to, { cache: "no-store" });
-  const data = await res.json();
-  if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error((data && data.error) || "bad response");
-  return data;
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const res = await fetch((url || state.calUrl) + "&from=" + from + "&to=" + to, { cache: "no-store", signal: ctrl.signal });
+    const data = await res.json();
+    if (!data || data.ok !== true || !Array.isArray(data.events)) throw new Error((data && data.error) || "bad response");
+    return data;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function fetchMainRange(url) {
@@ -1151,6 +1296,7 @@ function applyMainData(data) {
   }
   state.calStatus = "ready";
   cal.cache.clear();
+  cal.failed.clear();
   try { localStorage.setItem(cacheKey(), JSON.stringify({ at: state.eventsAt, range: state.range, events: data.events })); } catch (e) {}
 }
 
@@ -1184,6 +1330,7 @@ function validCalUrl(u) {
 async function loadCalendarSettings(user) {
   state.calUrl = null; state.events = []; state.eventsAt = null; state.range = null; state.calStatus = "none";
   cal.cache.clear();
+  cal.failed.clear();
   loadCachedEvents();
   renderCalendar();
   try {
@@ -1240,8 +1387,29 @@ function wireCalendar() {
 // sidebar (Mac) or above the tab bar (iPhone) on every screen. Sessions sync
 // between devices in users/{uid}/sessions, in the shape the Learning Time
 // Tracker spec needs later (start, end, course, topic, method, focus, note).
-const STALE_MS = 4 * 3600000;   // a timer running this long probably wasn't stopped
-const timer = { running: null, recent: [], unsubRunning: null, unsubRecent: null, tick: null, staleAsked: new Set() };
+const STALE_MS = 4 * 3600000;        // a timer running this long probably wasn't stopped
+const BLOCK_GRACE_MS = 15 * 60000;   // ...and neither was one still going 15 min after its block ended
+const SNOOZE_MS = 60 * 60000;        // "I'm still going" waits an hour before asking again
+const timer = { running: null, recent: [], unsubRunning: null, unsubRecent: null, tick: null };
+
+// When to ask "still studying?": 15 min after the calendar block ends (if the timer was
+// started before it ended), otherwise after 4 hours.
+function staleAt(s) {
+  const afterBlock = s.eventEnd && s.eventEnd > s.start ? s.eventEnd + BLOCK_GRACE_MS : Infinity;
+  return Math.min(afterBlock, s.start + STALE_MS);
+}
+// "I'm still going" is remembered on this device, so reopening the app doesn't ask again straight away.
+function snoozedUntil(s) {
+  try { return Number(localStorage.getItem("hb-timer-snooze:" + s.id)) || 0; } catch (e) { return 0; }
+}
+function snooze(s) {
+  try { localStorage.setItem("hb-timer-snooze:" + s.id, String(Date.now() + SNOOZE_MS)); } catch (e) {}
+}
+function checkStale() {
+  const s = timer.running;
+  if (!s || staleSession || !$("session-sheet").hidden) return;
+  if (Date.now() >= Math.max(staleAt(s), snoozedUntil(s))) openStaleSheet(s);
+}
 
 function sessionRef(id) { return fb.doc(fb.db, "users", state.user.uid, "sessions", id); }
 
@@ -1322,7 +1490,7 @@ function renderTimer() {
   const update = () => { $("timer-time").textContent = fmtClock(Date.now() - s.start); };
   update();
   timer.tick = setInterval(update, 1000);
-  if (Date.now() - s.start > STALE_MS && !timer.staleAsked.has(s.id)) { timer.staleAsked.add(s.id); openStaleSheet(s); }
+  checkStale();
 }
 
 // ---------- After stopping: optional focus rating and note ----------
@@ -1367,13 +1535,14 @@ let staleSession = null;
 function openStaleSheet(s) {
   staleSession = s;
   const startTxt = new Date(s.start).toLocaleDateString("en-US", { weekday: "short" }) + " " + fmtTime(s.start);
-  $("stale-text").textContent = "Your " + (s.course || s.label) + " timer has been running since " + startTxt +
-    " (" + fmtDuration(Date.now() - s.start) + "). When did you stop?";
   const endBtn = $("stale-end");
-  const canUseEnd = s.eventEnd && s.eventEnd > s.start && s.eventEnd < Date.now();
+  const canUseEnd = !!(s.eventEnd && s.eventEnd > s.start && s.eventEnd < Date.now());
+  $("stale-text").textContent = "Your " + (s.course || s.label) + " timer has been running since " + startTxt +
+    " (" + fmtDuration(Date.now() - s.start) + ")" +
+    (canUseEnd ? ", and the block ended at " + fmtTime(s.eventEnd) : "") + ". When did you stop?";
   endBtn.hidden = !canUseEnd;
   if (canUseEnd) endBtn.textContent = "When the block ended (" + fmtTime(s.eventEnd) + ")";
-  const d = new Date(Math.min(Date.now(), s.start + 3600000));
+  const d = new Date(canUseEnd ? s.eventEnd : Math.min(Date.now(), s.start + 3600000));
   $("stale-time").value = String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
   $("stale-error").textContent = "";
   $("stale-sheet").hidden = false;
@@ -1394,6 +1563,11 @@ function startSessions(user) {
     // Only one timer can run. If two devices started one, keep the newest and save the older.
     list.slice(1).forEach((old) => finishSession(old, Math.min(Date.now(), list[0].start), true));
     timer.running = list[0] || null;
+    // Stopped on your other device: close the "still studying?" question here too
+    if (staleSession && (!timer.running || timer.running.id !== staleSession.id)) {
+      $("stale-sheet").hidden = true;
+      staleSession = null;
+    }
     renderTimer();
     renderCalendar();
   }, (e) => console.warn("Couldn't load the timer:", e));
@@ -1410,6 +1584,8 @@ function stopSessions() {
   timer.unsubRunning = timer.unsubRecent = null;
   timer.running = null;
   timer.recent = [];
+  $("stale-sheet").hidden = true;
+  staleSession = null;
   renderTimer();
 }
 
@@ -1425,7 +1601,11 @@ function wireTimer() {
   }));
   $("stale-end").addEventListener("click", () => resolveStale(staleSession && staleSession.eventEnd));
   $("stale-now").addEventListener("click", () => resolveStale(Date.now()));
-  $("stale-later").addEventListener("click", () => { $("stale-sheet").hidden = true; staleSession = null; });
+  $("stale-later").addEventListener("click", () => {
+    if (staleSession) snooze(staleSession);
+    $("stale-sheet").hidden = true;
+    staleSession = null;
+  });
   $("stale-form").addEventListener("submit", (e) => {
     e.preventDefault();
     const s = staleSession;
@@ -1452,7 +1632,7 @@ renderHeader();
 renderTasks();
 scrollToNow(renderTimeline());
 renderCalendar();
-setInterval(() => { renderHeader(); renderCalendar(); }, 60 * 1000);
+setInterval(() => { renderHeader(); renderCalendar(); checkStale(); }, 60 * 1000);
 wireSignIn();
 wireCalendar();
 wireCalendarTab();

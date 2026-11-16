@@ -430,3 +430,13 @@ button.event:focus-visible, button.chip:focus-visible { outline: 2px solid var(-
   body.timer-on .toast { bottom: calc(140px + env(safe-area-inset-bottom)); }
 }
 .sheet .sheet-label, .sheet .form-error { margin-left: 0; }
+
+/* ---------- v12: rename tasks, done deadlines ---------- */
+.task-title[role="button"] { cursor: text; border-radius: 6px; }
+.task-title[role="button"]:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.task-edit {
+  flex: 1; min-width: 0; font: inherit; color: var(--text); background: var(--bg);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 8px; margin: -5px 0;
+}
+.task-edit:focus { outline: 2px solid var(--gold); outline-offset: 0; border-color: transparent; }
+.tl-empty .btn-link { font-size: inherit; }
