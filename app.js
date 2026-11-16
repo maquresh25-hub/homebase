@@ -188,7 +188,7 @@ function eventBlock(ev, heightPx) {
 
   // Study blocks get a play button (no separate study button anywhere else)
   const logged = loggedFor(ev);
-  if (logged > 0) {
+  if (logged >= 60000) {
     const em = document.createElement("em");
     em.className = "logged";
     em.textContent = "✓ " + fmtDuration(logged) + " logged";
@@ -954,7 +954,26 @@ const cal = {
   gridHour: null,         // hour at the top of the Mac week grid, kept across redraws
   gridStartH: 0,          // first hour the grid currently shows
   gridLive: false,        // true while the grid on screen holds a real scroll position
+  view: savedView(),      // Mac only: "week" grid or one expanded "day"
+  slide: 0,               // 1 or -1 right after moving forward/back, for the slide-in
 };
+function savedView() { try { return localStorage.getItem("hb-cal-view") === "day" ? "day" : "week"; } catch (e) { return "week"; } }
+function setView(view, day) {
+  cal.view = view;
+  if (day) cal.selected = startOfDay(day);
+  if (view === "day" && !day && !sameDay(startOfWeek(cal.selected), cal.weekStart)) cal.selected = new Date(cal.weekStart);
+  cal.weekStart = startOfWeek(cal.selected);
+  try { localStorage.setItem("hb-cal-view", view); } catch (e) {}
+  renderCalendarTab();
+}
+// Forward/back one step: a day in the day view, a week otherwise
+function stepCalendar(dir) {
+  const dayView = cal.view === "day" && !narrow.matches;
+  cal.selected = addDays(cal.selected, dayView ? dir : 7 * dir);
+  cal.weekStart = dayView ? startOfWeek(cal.selected) : addDays(cal.weekStart, 7 * dir);
+  cal.slide = dir;
+  renderCalendarTab();
+}
 const WEEK_RETRY_MS = 60 * 1000;   // a week that failed to load is retried after a minute
 
 function startOfWeek(d) { const x = startOfDay(d); x.setDate(x.getDate() - x.getDay()); return x; } // Sunday
@@ -1008,7 +1027,14 @@ function renderCalendarTab() {
 
   const ws = cal.weekStart;
   const mid = addDays(ws, 3);
-  $("cal-title").textContent = mid.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const dayView = cal.view === "day" && !narrow.matches;
+  $("cal-title").textContent = dayView
+    ? cal.selected.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+    : mid.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  $("view-day").setAttribute("aria-pressed", String(dayView));
+  $("view-week").setAttribute("aria-pressed", String(!dayView));
+  $("wk-prev").setAttribute("aria-label", dayView ? "Previous day" : "Previous week");
+  $("wk-next").setAttribute("aria-label", dayView ? "Next day" : "Next week");
   let status = " ";
   if (state.calStatus === "ready" && state.eventsAt) status = "Updated " + fmtTime(state.eventsAt);
   else if (state.calStatus === "loading") status = "Updating…";
@@ -1077,7 +1103,10 @@ function renderWeekGrid(loading, failed) {
   host.hidden = false;
   host.textContent = "";
   const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
-  const days = [...Array(7)].map((_, i) => addDays(cal.weekStart, i));
+  const week = [...Array(7)].map((_, i) => addDays(cal.weekStart, i));
+  const dayView = cal.view === "day";
+  const days = dayView ? [startOfDay(cal.selected)] : week;   // the columns to draw
+  const n = days.length;
   const perDay = days.map((d) => eventsForDay(d));
 
   // One shared hour range for the week
@@ -1088,18 +1117,24 @@ function renderWeekGrid(loading, failed) {
   });
   const y = (h) => (h - startH) * hourPx + 8;
 
-  // Header: day names and dates
+  // Header: the week's day names and dates. Click one to open that day; in the day view,
+  // the same row picks another day of the week.
   const head = document.createElement("div");
   head.className = "wk-head";
   head.appendChild(document.createElement("div"));
-  days.forEach((d) => {
-    const c = document.createElement("div");
-    c.className = "wk-day" + (sameDay(d, new Date()) ? " is-today" : "");
+  week.forEach((d) => {
+    const c = document.createElement("button");
+    c.type = "button";
+    const picked = dayView && sameDay(d, cal.selected);
+    c.className = "wk-day" + (sameDay(d, new Date()) ? " is-today" : "") + (picked ? " is-selected" : "");
+    c.setAttribute("aria-label", "Open " + d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }));
+    if (picked) c.setAttribute("aria-current", "date");
     const dow = document.createElement("span");
     dow.textContent = d.toLocaleDateString("en-US", { weekday: "short" });
     const num = document.createElement("b");
     num.textContent = d.getDate();
     c.append(dow, num);
+    c.addEventListener("click", () => setView("day", d));
     head.appendChild(c);
   });
   host.appendChild(head);
@@ -1109,6 +1144,7 @@ function renderWeekGrid(loading, failed) {
   if (chipsByDay.some((l) => l.length)) {
     const row = document.createElement("div");
     row.className = "wk-allday";
+    row.style.gridTemplateColumns = "64px repeat(" + n + ", minmax(0, 1fr))";
     row.appendChild(document.createElement("div"));
     chipsByDay.forEach((list) => {
       const cell = document.createElement("div");
@@ -1136,8 +1172,8 @@ function renderWeekGrid(loading, failed) {
   days.forEach((d, i) => {
     const col = document.createElement("div");
     col.className = "wk-col" + (sameDay(d, new Date()) ? " is-today" : "");
-    col.style.left = "calc(64px + (100% - 64px) * " + i / 7 + ")";
-    col.style.width = "calc((100% - 64px) / 7)";
+    col.style.left = "calc(64px + (100% - 64px) * " + i / n + ")";
+    col.style.width = "calc((100% - 64px) / " + n + ")";
     const dayStart = d.getTime();
     layoutColumns(perDay[i].filter(isBlock)).forEach(({ ev, col: c, cols }) => {
       const s = Math.max(startH, (ev.startMs - dayStart) / 3600000);
@@ -1163,7 +1199,7 @@ function renderWeekGrid(loading, failed) {
   if (loading || failed) {
     const p = document.createElement("p");
     p.className = "tl-empty";
-    p.textContent = loading ? "Loading this week…" : "Couldn't load this week. ";
+    p.textContent = loading ? (dayView ? "Loading…" : "Loading this week…") : "Couldn't load this week. ";
     if (!loading) {
       const retry = document.createElement("button");
       retry.type = "button";
@@ -1187,6 +1223,15 @@ function renderWeekGrid(loading, failed) {
   scroller.scrollTop = Math.max(0, target);
   cal.gridStartH = startH;
   cal.gridLive = true;
+  host.classList.toggle("is-day", dayView);
+  // After moving forward/back, slide the new days in from that side
+  // (any other redraw, like the one every minute, clears it so nothing slides by itself)
+  host.classList.remove("slide-next", "slide-prev");
+  if (cal.slide) {
+    void host.offsetWidth;   // restart the animation
+    host.classList.add(cal.slide > 0 ? "slide-next" : "slide-prev");
+    cal.slide = 0;
+  }
 }
 
 // ---------- Event details (opens on tap) ----------
@@ -1206,9 +1251,38 @@ function openEventSheet(ev) {
 function closeEventSheet() { $("event-sheet").hidden = true; }
 
 function wireCalendarTab() {
-  const go = (days) => { cal.weekStart = addDays(cal.weekStart, days); cal.selected = addDays(cal.selected, days); renderCalendarTab(); };
-  $("wk-prev").addEventListener("click", () => go(-7));
-  $("wk-next").addEventListener("click", () => go(7));
+  $("wk-prev").addEventListener("click", () => stepCalendar(-1));
+  $("wk-next").addEventListener("click", () => stepCalendar(1));
+  $("view-day").addEventListener("click", () => setView("day"));
+  $("view-week").addEventListener("click", () => setView("week"));
+
+  // Two-finger swipe left/right on the Mac trackpad: next/previous week (or day).
+  // One swipe moves one step: after a step, the rest of that swipe (and its glide) is ignored.
+  let swipeX = 0, swipeLocked = false, swipeIdle = null;
+  $("week-grid").addEventListener("wheel", (e) => {
+    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;   // up/down scrolling works as normal
+    e.preventDefault();                                       // also stops Chrome's back/forward swipe
+    clearTimeout(swipeIdle);
+    swipeIdle = setTimeout(() => { swipeX = 0; swipeLocked = false; }, 250);
+    if (swipeLocked) return;
+    swipeX += e.deltaX;
+    if (Math.abs(swipeX) >= 60) { swipeLocked = true; stepCalendar(swipeX > 0 ? 1 : -1); swipeX = 0; }
+  }, { passive: false });
+
+  // Mac keyboard: ← → move, T today, D day view, W week view
+  document.addEventListener("keydown", (e) => {
+    if ($("view-calendar").hidden || narrow.matches || e.metaKey || e.ctrlKey || e.altKey) return;
+    const t = e.target;
+    if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+    if (!$("event-sheet").hidden || !$("session-sheet").hidden || !$("stale-sheet").hidden) return;
+    if (e.key === "ArrowLeft") stepCalendar(-1);
+    else if (e.key === "ArrowRight") stepCalendar(1);
+    else if (e.key === "t" || e.key === "T") $("wk-today").click();
+    else if (e.key === "d" || e.key === "D") setView("day");
+    else if (e.key === "w" || e.key === "W") setView("week");
+    else return;
+    e.preventDefault();
+  });
   $("wk-today").addEventListener("click", () => {
     cal.weekStart = startOfWeek(new Date()); cal.selected = startOfDay(new Date());
     cal.gridHour = null; cal.gridLive = false;   // jump back to the usual spot (8 AM, or the "now" line)

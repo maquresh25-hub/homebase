@@ -440,3 +440,33 @@ button.event:focus-visible, button.chip:focus-visible { outline: 2px solid var(-
 }
 .task-edit:focus { outline: 2px solid var(--gold); outline-offset: 0; border-color: transparent; }
 .tl-empty .btn-link { font-size: inherit; }
+
+/* ---------- v13: day view, swipe between weeks ---------- */
+.view-switch { display: flex; margin-right: 6px; }
+.view-switch .nav-btn { border-radius: 0; }
+.view-switch .nav-btn:first-child { border-radius: 10px 0 0 10px; }
+.view-switch .nav-btn:last-child { border-radius: 0 10px 10px 0; margin-left: -1px; }
+.view-switch .nav-btn[aria-pressed="true"] { background: var(--text); color: var(--bg); border-color: var(--text); }
+@media (max-width: 820px) { .view-switch { display: none; } }
+.week-card { overscroll-behavior-x: contain; }
+button.wk-day { font: inherit; font-size: .78rem; color: var(--muted); background: none; border: 0; padding: 0; cursor: pointer; }
+button.wk-day:hover b { background: rgba(127,120,105,.12); }
+button.wk-day.is-today:hover b { background: var(--text); }
+button.wk-day:focus-visible { outline: none; }
+button.wk-day:focus-visible b { outline: 2px solid var(--gold); outline-offset: 1px; }
+.wk-day.is-selected b { box-shadow: inset 0 0 0 1.5px var(--text); }
+.wk-day.is-today.is-selected b { box-shadow: 0 0 0 2px var(--card), 0 0 0 3.5px var(--text); }
+/* Narrow week columns: show the title of short blocks rather than only their time */
+.wk-col .event.short span { display: none; }
+/* Day view: one wide column, so blocks show their full details */
+.is-day .wk-col .event { font-size: .85rem; padding: 6px 10px; }
+.is-day .wk-col .event span { font-size: .78rem; }
+.is-day .wk-col .event.short span { display: inline; }
+.is-day .wk-allday .chip { font-size: .78rem; }
+.is-day .wk-allday > div { flex-direction: row; flex-wrap: wrap; }
+/* Slide in from the side you moved to */
+.week-card.slide-next .wk-allday, .week-card.slide-next .wk-body { animation: slide-in-right .24s ease; }
+.week-card.slide-prev .wk-allday, .week-card.slide-prev .wk-body { animation: slide-in-left .24s ease; }
+@keyframes slide-in-right { from { opacity: .3; transform: translateX(28px); } to { opacity: 1; transform: none; } }
+@keyframes slide-in-left { from { opacity: .3; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .week-card .wk-allday, .week-card .wk-body { animation: none !important; } }
