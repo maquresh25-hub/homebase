@@ -470,3 +470,31 @@ button.wk-day:focus-visible b { outline: 2px solid var(--gold); outline-offset: 
 @keyframes slide-in-right { from { opacity: .3; transform: translateX(28px); } to { opacity: 1; transform: none; } }
 @keyframes slide-in-left { from { opacity: .3; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .week-card .wk-allday, .week-card .wk-body { animation: none !important; } }
+
+/* ---------- v14: Mac calendar is one sideways-scrolling strip of days ---------- */
+.wk-scroll {
+  height: calc(100vh - 176px); max-height: none; min-height: 320px; overflow: auto;
+  scroll-snap-type: x mandatory; scroll-padding-left: 64px; overscroll-behavior: contain;
+}
+.wk-canvas { position: relative; }
+.wk-top { position: sticky; top: 0; z-index: 6; display: grid; background: var(--card); border-bottom: 1px solid var(--line); }
+.wk-top > * { grid-area: 1 / 1; }
+.wk-topin { position: relative; min-width: 0; }
+.wk-corner { position: sticky; left: 0; width: 64px; z-index: 2; background: var(--card); }
+.wk-head { display: block; position: relative; height: 62px; padding: 0; border-bottom: 0; }
+button.wk-day { position: absolute; top: 0; height: 62px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; }
+.wk-day.is-weekend { opacity: .75; }
+.wk-allday { display: block; position: relative; overflow: hidden; padding: 0; border-bottom: 0; border-top: 1px solid var(--line); }
+.wk-allday.is-empty { border-top: 0; }
+.wk-allday > div { position: absolute; top: 5px; padding: 0 3px; gap: 4px; display: flex; flex-direction: column; align-items: flex-start; }
+.wk-allday .chip { height: 22px; line-height: 14px; }
+.wk-body { display: grid; position: relative; margin-right: 0; }
+.wk-body > * { grid-area: 1 / 1; }
+.wk-cols { position: relative; min-width: 0; }
+.wk-gutter { position: sticky; left: 0; width: 64px; z-index: 4; background: var(--card); }
+.wk-gutter span { position: absolute; right: 10px; transform: translateY(-50%); font-size: .75rem; color: var(--muted); white-space: nowrap; }
+.wk-now-label { position: absolute; right: 6px; transform: translateY(-50%); font-size: .7rem; font-weight: 600; color: #fff; background: var(--red); border-radius: 999px; padding: 1px 6px; white-space: nowrap; }
+.wk-line { position: absolute; left: 64px; right: 0; height: 0; border-top: 1px solid var(--line); }
+.wk-col { scroll-snap-align: start; }
+.wk-now::before { display: none; }
+.is-day .wk-allday > div { flex-direction: column; }

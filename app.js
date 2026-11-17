@@ -55,7 +55,7 @@ function showTab() {
     else link.removeAttribute("aria-current");
   });
   if (tab === "calendar") renderCalendarTab();
-  else cal.gridLive = false;
+  else cal.gridLive = false;   // a hidden calendar loses its scroll position; it's put back on return
 }
 
 function renderHeader() {
@@ -827,10 +827,10 @@ function normalize(raw) {
   }).filter((e) => !isNaN(e.startMs) && !isNaN(e.endMs));
 }
 
-function eventsForDay(date) {
+function eventsForDay(date, pool) {
   const s = startOfDay(date).getTime(), e = addDays(startOfDay(date), 1).getTime();
   // Hide deadlines marked done, and duplicates that come from two calendars.
-  const list = state.events.filter((ev) => ev.startMs < e && ev.endMs > s && !state.doneEvents.has(ev.id));
+  const list = (pool || state.events).filter((ev) => ev.startMs < e && ev.endMs > s && !state.doneEvents.has(ev.id));
   return dedupe(list).sort((a, b) => a.startMs - b.startMs);
 }
 
@@ -951,27 +951,38 @@ const cal = {
   cache: new Map(),       // weekStart ms -> events fetched for weeks outside the main range
   loadingWeeks: new Set(),
   failed: new Map(),      // weekStart ms -> when its fetch last failed
-  gridHour: null,         // hour at the top of the Mac week grid, kept across redraws
-  gridStartH: 0,          // first hour the grid currently shows
-  gridLive: false,        // true while the grid on screen holds a real scroll position
-  view: savedView(),      // Mac only: "week" grid or one expanded "day"
-  slide: 0,               // 1 or -1 right after moving forward/back, for the slide-in
+  gridHour: null,         // hour at the top of the Mac calendar, kept across redraws
+  gridLive: false,        // true while the calendar on screen holds a real scroll position
+  view: savedView(),      // Mac only: "week" (7 days across) or "day" (1 day across)
+  anchor: null,           // Mac only: the first day showing on the left
+  anchorFrac: 0,          // ...and how far past it the strip is scrolled, in days
 };
 function savedView() { try { return localStorage.getItem("hb-cal-view") === "day" ? "day" : "week"; } catch (e) { return "week"; } }
+cal.anchor = cal.view === "day" ? startOfDay(new Date()) : startOfWeek(new Date());
+
 function setView(view, day) {
+  rememberGridScroll();
   cal.view = view;
-  if (day) cal.selected = startOfDay(day);
-  if (view === "day" && !day && !sameDay(startOfWeek(cal.selected), cal.weekStart)) cal.selected = new Date(cal.weekStart);
-  cal.weekStart = startOfWeek(cal.selected);
+  if (day) cal.anchor = startOfDay(day);
+  else if (view === "week") cal.anchor = startOfWeek(cal.anchor);
+  else if (sameDay(startOfWeek(new Date()), startOfWeek(cal.anchor))) cal.anchor = startOfDay(new Date());   // this week: open today
+  cal.anchorFrac = 0;
+  cal.selected = new Date(cal.anchor);
+  cal.weekStart = startOfWeek(cal.anchor);
+  cal.gridLive = false;   // place the strip afresh
   try { localStorage.setItem("hb-cal-view", view); } catch (e) {}
   renderCalendarTab();
 }
-// Forward/back one step: a day in the day view, a week otherwise
+// Forward/back one step. Mac: glide a week (a day in the day view). iPhone: a week.
 function stepCalendar(dir) {
-  const dayView = cal.view === "day" && !narrow.matches;
-  cal.selected = addDays(cal.selected, dayView ? dir : 7 * dir);
-  cal.weekStart = dayView ? startOfWeek(cal.selected) : addDays(cal.weekStart, 7 * dir);
-  cal.slide = dir;
+  const sc = gridScroller();
+  if (!narrow.matches && sc && cal.gridLive && grid.colW) {
+    const first = Math.round(sc.scrollLeft / grid.colW);
+    sc.scrollTo({ left: (first + dir * grid.per) * grid.colW, behavior: "smooth" });
+    return;
+  }
+  cal.weekStart = addDays(cal.weekStart, 7 * dir);
+  cal.selected = addDays(cal.selected, 7 * dir);
   renderCalendarTab();
 }
 const WEEK_RETRY_MS = 60 * 1000;   // a week that failed to load is retried after a minute
@@ -997,7 +1008,37 @@ function weekEvents(weekStart) {
 
 function retryWeek() {
   cal.failed.delete(cal.weekStart.getTime());
+  visibleWeeks().forEach((ws) => cal.failed.delete(ws.getTime()));
   renderCalendarTab();
+}
+
+// ---- Mac strip: which saved events cover a day, and loading the weeks in view
+function inMainRange(ws) {
+  return !!(state.range && ws.getTime() >= state.range[0] && addDays(ws, 7).getTime() <= state.range[1]);
+}
+function poolFor(day) {
+  const ws = startOfWeek(day);
+  return inMainRange(ws) ? state.events : (cal.cache.get(ws.getTime()) || []);
+}
+function visibleWeeks() {
+  const sc = gridScroller();
+  if (!sc || !grid.colW || !grid.base) return [];
+  const first = Math.floor(sc.scrollLeft / grid.colW);
+  const a = startOfWeek(addDays(grid.base, first)), b = startOfWeek(addDays(grid.base, first + grid.per));
+  return a.getTime() === b.getTime() ? [a] : [a, b];
+}
+// Fetch the weeks on screen (and the ones either side, so scrolling on doesn't show blanks)
+function loadWeeksInView() {
+  if (!state.calUrl) return;
+  const weeks = visibleWeeks();
+  if (!weeks.length) return;
+  [addDays(weeks[0], -7), ...weeks, addDays(weeks[weeks.length - 1], 7)].forEach((ws) => {
+    const s = ws.getTime();
+    if (inMainRange(ws) || cal.cache.has(s) || cal.loadingWeeks.has(s)) return;
+    const failedAt = cal.failed.get(s);
+    if (failedAt && Date.now() - failedAt < WEEK_RETRY_MS) return;
+    fetchWeek(ws);
+  });
 }
 
 async function fetchWeek(weekStart) {
@@ -1045,12 +1086,12 @@ function renderCalendarTab() {
   // A hidden grid can't hold a scroll position, and redrawing it every minute is wasted work.
   if ($("view-calendar").hidden) return;
 
+  if (!narrow.matches) { renderWeekGrid(); return; }
   const { events, loading, failed } = weekEvents(ws);
   const prev = state.events;
   state.events = events;            // drawing helpers read state.events; restore right after
   try {
-    if (narrow.matches) renderPhoneWeek(loading, failed);
-    else renderWeekGrid(loading, failed);
+    renderPhoneWeek(loading, failed);
   } finally {
     state.events = prev;
   }
@@ -1087,150 +1128,221 @@ function renderPhoneWeek(loading, failed) {
   if (line && !cal.scrolledPhone) { scrollToNow(line); cal.scrolledPhone = true; }
 }
 
-// The week grid is rebuilt every minute and on every sync. Note which hour is at the top
-// of it first, so the rebuilt grid can go back to the same place.
+// ---------- Mac calendar: one long strip of days, scrolled sideways like Apple Calendar ----------
+// The browser does the scrolling (so it follows your fingers and glides), and each day
+// snaps into place when it stops. The time column and the date row stay put.
+const GUTTER = 64;        // width of the time column
+const DAYS_BACK = 56;     // days kept to the left of the day in view when the strip is (re)built
+const DAYS_TOTAL = 238;   // days in the strip (8 weeks back, 26 ahead)
+const CHIP_ROW = 26;      // height of one all-day chip row
+const grid = { els: null, base: null, colW: 0, per: 7, counts: [], raf: 0, idle: null };
+
+function gridScroller() { return grid.els && grid.els.scroller; }
+function hourHeight() { return parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56; }
+function dayIndex(date) { return Math.round((startOfDay(date).getTime() - grid.base.getTime()) / 86400000); }
+
+// Note the day on the left and the hour at the top, so a redraw, a tab switch or a
+// window resize can put the calendar back in the same place.
 function rememberGridScroll() {
-  const old = $("week-grid").querySelector(".wk-scroll");
-  if (!old || !cal.gridLive || old.clientHeight === 0) return;
-  const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
-  cal.gridHour = cal.gridStartH + old.scrollTop / hourPx;
+  const sc = gridScroller();
+  if (!sc || !cal.gridLive || sc.clientHeight === 0 || !grid.colW || !grid.base) return;
+  const pos = sc.scrollLeft / grid.colW;
+  const first = Math.max(0, Math.min(DAYS_TOTAL - 1, Math.round(pos)));
+  cal.anchor = addDays(grid.base, first);
+  cal.anchorFrac = pos - first;
+  cal.gridHour = sc.scrollTop / hourHeight();
 }
 
-function renderWeekGrid(loading, failed) {
-  $("phone-week").hidden = true;
+function buildGrid(host) {
+  host.textContent = "";
+  const mk = (cls, parent) => { const el = document.createElement("div"); el.className = cls; if (parent) parent.appendChild(el); return el; };
+  const scroller = mk("wk-scroll", host);
+  const canvas = mk("wk-canvas", scroller);
+  const top = mk("wk-top", canvas);
+  const topIn = mk("wk-topin", top);
+  const head = mk("wk-head", topIn);
+  const allday = mk("wk-allday", topIn);
+  mk("wk-corner", top);
+  const body = mk("wk-body", canvas);
+  const cols = mk("wk-cols", body);
+  const gutter = mk("wk-gutter", body);
+  grid.els = { scroller, canvas, head, allday, body, cols, gutter };
+  scroller.addEventListener("scroll", () => {
+    if (!grid.raf) grid.raf = requestAnimationFrame(() => { grid.raf = 0; syncGrid(); });
+    clearTimeout(grid.idle);
+    grid.idle = setTimeout(gridIdle, 200);
+  }, { passive: true });
+  // Window resized: the days change width, so redraw and keep the same day on the left
+  let lastW = 0;
+  new ResizeObserver(() => {
+    const w = scroller.clientWidth;
+    if (!w || w === lastW) return;
+    const first = lastW === 0; lastW = w;
+    if (!first && !narrow.matches && !$("view-calendar").hidden) renderCalendarTab();
+  }).observe(scroller);
+}
+
+// While scrolling: keep the title and the all-day area in step with the days in view
+function syncGrid() {
+  const { scroller, allday, head } = grid.els;
+  if (!grid.colW || !grid.base) return;
+  const pos = scroller.scrollLeft / grid.colW;
+  const first = Math.max(0, Math.min(DAYS_TOTAL - 1, Math.round(pos)));
+  const day = addDays(grid.base, first);
+  const dayView = grid.per === 1;
+  $("cal-title").textContent = dayView
+    ? day.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
+    : addDays(day, 3).toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  // All-day area: as tall as the busiest day in view
+  let rows = 0;
+  for (let i = Math.max(0, Math.floor(pos)); i <= Math.min(DAYS_TOTAL - 1, Math.ceil(pos) + grid.per - 1); i++) rows = Math.max(rows, grid.counts[i] || 0);
+  const h = rows ? rows * CHIP_ROW + 8 : 0;
+  if (allday.style.height !== h + "px") allday.style.height = h + "px";
+  allday.classList.toggle("is-empty", rows === 0);
+  head.classList.toggle("is-day", dayView);
+}
+
+// Scrolling has stopped: remember where, load any weeks that just came into view,
+// and redraw (which also re-centres the strip if you've gone a long way).
+function gridIdle() {
+  if (narrow.matches || $("view-calendar").hidden || !cal.gridLive) return;
   rememberGridScroll();
+  cal.weekStart = startOfWeek(cal.anchor);
+  cal.selected = new Date(cal.anchor);
+  const idx = dayIndex(cal.anchor);
+  const pending = visibleWeeks().some((ws) => !inMainRange(ws) && !cal.cache.has(ws.getTime()));
+  if (idx < 14 || idx > DAYS_TOTAL - 28 || pending || $("cal-status").dataset.grid) renderCalendarTab();
+}
+
+function renderWeekGrid() {
+  $("phone-week").hidden = true;
   const host = $("week-grid");
   host.hidden = false;
-  host.textContent = "";
-  const hourPx = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--hour")) || 56;
-  const week = [...Array(7)].map((_, i) => addDays(cal.weekStart, i));
-  const dayView = cal.view === "day";
-  const days = dayView ? [startOfDay(cal.selected)] : week;   // the columns to draw
-  const n = days.length;
-  const perDay = days.map((d) => eventsForDay(d));
+  rememberGridScroll();
+  if (!grid.els || !host.contains(grid.els.scroller)) buildGrid(host);
+  const { scroller, canvas, head, allday, body, cols, gutter } = grid.els;
+  const hourPx = hourHeight();
+  const per = cal.view === "day" ? 1 : 7;
+  const colW = Math.max(40, (scroller.clientWidth - GUTTER) / per);
+  // (Re)centre the strip around the day in view: first time, and when that day nears either end
+  let idx = grid.base ? dayIndex(cal.anchor) : -1;
+  let place = !cal.gridLive || colW !== grid.colW || per !== grid.per;
+  if (idx < 14 || idx > DAYS_TOTAL - 28) { grid.base = addDays(startOfDay(cal.anchor), -DAYS_BACK); idx = DAYS_BACK; place = true; }
+  grid.colW = colW; grid.per = per;
+  host.classList.toggle("is-day", per === 1);
+  canvas.style.width = GUTTER + DAYS_TOTAL * colW + "px";
+  body.style.height = 24 * hourPx + 16 + "px";
+  const y = (h) => h * hourPx + 8;
+  const left = (i) => GUTTER + i * colW + "px";
 
-  // One shared hour range for the week
-  let startH = DEFAULT_START, endH = DEFAULT_END;
-  perDay.forEach((list, i) => {
-    const [a, b] = hourRange(list.filter(isBlock), days[i].getTime());
-    startH = Math.min(startH, a); endH = Math.max(endH, b);
-  });
-  const y = (h) => (h - startH) * hourPx + 8;
+  // Time column and hour lines (the whole day, midnight to midnight)
+  gutter.textContent = ""; cols.textContent = ""; head.textContent = ""; allday.textContent = "";
+  for (let h = 0; h <= 24; h++) {
+    const line = document.createElement("div");
+    line.className = "wk-line";
+    line.style.top = y(h) + "px";
+    cols.appendChild(line);
+    if (h === 0 || h === 24) continue;
+    const label = document.createElement("span");
+    label.textContent = fmtHour(h);
+    label.style.top = y(h) + "px";
+    gutter.appendChild(label);
+  }
 
-  // Header: the week's day names and dates. Click one to open that day; in the day view,
-  // the same row picks another day of the week.
-  const head = document.createElement("div");
-  head.className = "wk-head";
-  head.appendChild(document.createElement("div"));
-  week.forEach((d) => {
+  const now = new Date();
+  const todayMs = startOfDay(now).getTime();
+  const nowHours = now.getHours() + now.getMinutes() / 60;
+  grid.counts = [];
+  for (let i = 0; i < DAYS_TOTAL; i++) {
+    const d = addDays(grid.base, i);
+    const isToday = d.getTime() === todayMs;
+    const list = eventsForDay(d, poolFor(d));
+
+    // Date at the top: click to open that day (click again to go back to the week)
     const c = document.createElement("button");
     c.type = "button";
-    const picked = dayView && sameDay(d, cal.selected);
-    c.className = "wk-day" + (sameDay(d, new Date()) ? " is-today" : "") + (picked ? " is-selected" : "");
-    c.setAttribute("aria-label", "Open " + d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }));
-    if (picked) c.setAttribute("aria-current", "date");
+    c.className = "wk-day" + (isToday ? " is-today" : "") + (d.getDay() === 0 || d.getDay() === 6 ? " is-weekend" : "");
+    c.style.left = left(i); c.style.width = colW + "px";
+    const longDate = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    c.setAttribute("aria-label", per === 1 ? "Back to the week of " + longDate : "Open " + longDate);
     const dow = document.createElement("span");
     dow.textContent = d.toLocaleDateString("en-US", { weekday: "short" });
     const num = document.createElement("b");
     num.textContent = d.getDate();
     c.append(dow, num);
-    c.addEventListener("click", () => setView("day", d));
+    c.addEventListener("click", () => (grid.per === 1 ? setView("week") : setView("day", d)));
     head.appendChild(c);
-  });
-  host.appendChild(head);
 
-  // All-day and deadline chips, per day
-  const chipsByDay = perDay.map((list) => list.filter((e) => e.allDay || !isBlock(e)));
-  if (chipsByDay.some((l) => l.length)) {
-    const row = document.createElement("div");
-    row.className = "wk-allday";
-    row.style.gridTemplateColumns = "64px repeat(" + n + ", minmax(0, 1fr))";
-    row.appendChild(document.createElement("div"));
-    chipsByDay.forEach((list) => {
+    // All-day items and deadlines
+    const chips = list.filter((e) => e.allDay || !isBlock(e));
+    grid.counts.push(chips.length);
+    if (chips.length) {
       const cell = document.createElement("div");
-      list.forEach((e) => cell.appendChild(eventChip(e, e.allDay ? e.title : e.title + " · " + fmtTime(e.startMs))));
-      row.appendChild(cell);
-    });
-    host.appendChild(row);
-  }
+      cell.style.left = left(i); cell.style.width = colW + "px";
+      chips.forEach((e) => cell.appendChild(eventChip(e, e.allDay ? e.title : e.title + " · " + fmtTime(e.startMs))));
+      allday.appendChild(cell);
+    }
 
-  const scroller = document.createElement("div");
-  scroller.className = "wk-scroll";
-  const body = document.createElement("div");
-  body.className = "wk-body";
-  body.style.height = (endH - startH) * hourPx + 16 + "px";
-  for (let h = startH; h <= endH; h++) {
-    const row = document.createElement("div");
-    row.className = "hour";
-    row.style.top = y(h) + "px";
-    const label = document.createElement("span");
-    label.textContent = h === 24 ? "12 AM" : fmtHour(h);
-    row.appendChild(label);
-    body.appendChild(row);
-  }
-  let nowLine = null;
-  days.forEach((d, i) => {
+    // The day's column
     const col = document.createElement("div");
-    col.className = "wk-col" + (sameDay(d, new Date()) ? " is-today" : "");
-    col.style.left = "calc(64px + (100% - 64px) * " + i / n + ")";
-    col.style.width = "calc((100% - 64px) / " + n + ")";
+    col.className = "wk-col" + (isToday ? " is-today" : "");
+    col.style.left = left(i); col.style.width = colW + "px";
     const dayStart = d.getTime();
-    layoutColumns(perDay[i].filter(isBlock)).forEach(({ ev, col: c, cols }) => {
-      const s = Math.max(startH, (ev.startMs - dayStart) / 3600000);
-      const en = Math.min(endH, (ev.endMs - dayStart) / 3600000);
+    layoutColumns(list.filter(isBlock)).forEach(({ ev, col: k, cols: n }) => {
+      const s = Math.max(0, (ev.startMs - dayStart) / 3600000);
+      const en = Math.min(24, (ev.endMs - dayStart) / 3600000);
       const block = eventBlock(ev, (en - s) * hourPx);
       block.style.top = y(s) + 1 + "px";
-      block.style.left = "calc(" + (100 * c / cols) + "% + 2px)";
-      block.style.width = "calc(" + (100 / cols) + "% - 4px)";
+      block.style.left = "calc(" + (100 * k / n) + "% + 2px)";
+      block.style.width = "calc(" + (100 / n) + "% - 4px)";
       col.appendChild(block);
     });
-    if (sameDay(d, new Date())) {
-      const now = new Date();
-      const hours = now.getHours() + now.getMinutes() / 60;
-      if (hours >= startH && hours <= endH) {
-        nowLine = document.createElement("div");
-        nowLine.className = "wk-now";
-        nowLine.style.top = y(hours) + "px";
-        col.appendChild(nowLine);
-      }
+    if (isToday) {
+      const line = document.createElement("div");
+      line.className = "wk-now";
+      line.style.top = y(nowHours) + "px";
+      col.appendChild(line);
     }
-    body.appendChild(col);
-  });
-  if (loading || failed) {
-    const p = document.createElement("p");
-    p.className = "tl-empty";
-    p.textContent = loading ? (dayView ? "Loading…" : "Loading this week…") : "Couldn't load this week. ";
-    if (!loading) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "btn-link";
-      retry.textContent = "Try again";
-      retry.addEventListener("click", retryWeek);
-      p.appendChild(retry);
+    cols.appendChild(col);
+  }
+  // The current time, in red, in the time column
+  const nowLabel = document.createElement("b");
+  nowLabel.className = "wk-now-label";
+  nowLabel.textContent = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  nowLabel.style.top = y(nowHours) + "px";
+  gutter.appendChild(nowLabel);
+
+  // Put the strip in place. Only when something changed: touching the scroll position
+  // on every redraw would cut off a glide that's still going.
+  if (place) {
+    scroller.style.scrollSnapType = "none";   // exact placement first, snapping back on after
+    scroller.scrollLeft = (idx + cal.anchorFrac) * colW;
+    if (cal.gridHour === null) {
+      // First time: open with the morning in view; later in the day, keep the "now" line in view
+      const shown = (scroller.clientHeight - 80) / hourPx;
+      cal.gridHour = nowHours > 7.5 + shown - 1.5 ? Math.max(0, nowHours - shown / 2) : 7.5;
     }
-    body.appendChild(p);
+    scroller.scrollTop = cal.gridHour * hourPx;
+    scroller.style.scrollSnapType = "";
   }
-  scroller.appendChild(body);
-  host.appendChild(scroller);
-  // Put the grid back where you had scrolled to (straight away, so there's no visible jump).
-  // First time: open at 8 AM so mornings are visible; later in the day, keep the "now" line in view.
-  let target;
-  if (cal.gridHour !== null) target = y(cal.gridHour) - 8;
-  else {
-    target = y(Math.max(startH, 8)) - 8;
-    if (nowLine && nowLine.offsetTop > target + scroller.clientHeight - 80) target = nowLine.offsetTop - scroller.clientHeight / 2;
-  }
-  scroller.scrollTop = Math.max(0, target);
-  cal.gridStartH = startH;
   cal.gridLive = true;
-  host.classList.toggle("is-day", dayView);
-  // After moving forward/back, slide the new days in from that side
-  // (any other redraw, like the one every minute, clears it so nothing slides by itself)
-  host.classList.remove("slide-next", "slide-prev");
-  if (cal.slide) {
-    void host.offsetWidth;   // restart the animation
-    host.classList.add(cal.slide > 0 ? "slide-next" : "slide-prev");
-    cal.slide = 0;
+  syncGrid();
+
+  // Weeks beyond the saved range load as they come into view
+  loadWeeksInView();
+  const status = $("cal-status");
+  const weeks = visibleWeeks().filter((ws) => !inMainRange(ws) && !cal.cache.has(ws.getTime()));
+  delete status.dataset.grid;
+  if (weeks.some((ws) => cal.loadingWeeks.has(ws.getTime()))) { status.textContent = "Loading…"; status.dataset.grid = "1"; }
+  else if (weeks.some((ws) => cal.failed.has(ws.getTime()))) {
+    status.textContent = "Couldn't load this week. ";
+    status.dataset.grid = "1";
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "btn-link";
+    retry.textContent = "Try again";
+    retry.addEventListener("click", retryWeek);
+    status.appendChild(retry);
   }
 }
 
@@ -1256,19 +1368,6 @@ function wireCalendarTab() {
   $("view-day").addEventListener("click", () => setView("day"));
   $("view-week").addEventListener("click", () => setView("week"));
 
-  // Two-finger swipe left/right on the Mac trackpad: next/previous week (or day).
-  // One swipe moves one step: after a step, the rest of that swipe (and its glide) is ignored.
-  let swipeX = 0, swipeLocked = false, swipeIdle = null;
-  $("week-grid").addEventListener("wheel", (e) => {
-    if (Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;   // up/down scrolling works as normal
-    e.preventDefault();                                       // also stops Chrome's back/forward swipe
-    clearTimeout(swipeIdle);
-    swipeIdle = setTimeout(() => { swipeX = 0; swipeLocked = false; }, 250);
-    if (swipeLocked) return;
-    swipeX += e.deltaX;
-    if (Math.abs(swipeX) >= 60) { swipeLocked = true; stepCalendar(swipeX > 0 ? 1 : -1); swipeX = 0; }
-  }, { passive: false });
-
   // Mac keyboard: ← → move, T today, D day view, W week view
   document.addEventListener("keydown", (e) => {
     if ($("view-calendar").hidden || narrow.matches || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1285,7 +1384,16 @@ function wireCalendarTab() {
   });
   $("wk-today").addEventListener("click", () => {
     cal.weekStart = startOfWeek(new Date()); cal.selected = startOfDay(new Date());
-    cal.gridHour = null; cal.gridLive = false;   // jump back to the usual spot (8 AM, or the "now" line)
+    cal.anchor = cal.view === "day" && !narrow.matches ? startOfDay(new Date()) : startOfWeek(new Date());
+    cal.anchorFrac = 0;
+    // Mac: glide back if this week is still on the strip; otherwise redraw there
+    const sc = gridScroller();
+    const idx = grid.base ? dayIndex(cal.anchor) : -1;
+    if (!narrow.matches && sc && cal.gridLive && idx >= 14 && idx <= DAYS_TOTAL - 28) {
+      sc.scrollTo({ left: idx * grid.colW, behavior: "smooth" });
+      return;
+    }
+    cal.gridLive = false;
     renderCalendarTab();
   });
   narrow.addEventListener("change", renderCalendarTab);
