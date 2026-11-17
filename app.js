@@ -37,6 +37,7 @@ const state = {
   doneEvents: new Set(), // calendar deadlines marked done (synced in Firestore)
   doneList: [],          // the same deadlines with titles, for the "Done deadlines" list
   showDoneDeadlines: false,
+  kitLinks: {},          // exam name -> link to its exam kit (synced in settings/kits)
   range: null,        // [startMs, endMs] the main copy covers
 };
 let fb = null;        // loaded Firebase functions + instances
@@ -54,6 +55,7 @@ function showTab() {
     if (t === tab) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
+  if (tab === "study") renderStudy();
   if (tab === "calendar") renderCalendarTab();
   else cal.gridLive = false;   // a hidden calendar loses its scroll position; it's put back on return
 }
@@ -98,7 +100,7 @@ function drawDay(tl, alldayBox, date, opts) {
   const dayEvents = eventsForDay(date);
   const timed = dayEvents.filter(isBlock);
   const markers = dayEvents.filter((e) => !e.allDay && !isBlock(e)); // e.g. Canvas due times
-  renderAllDay(alldayBox, dayEvents.filter((e) => e.allDay), markers);
+  renderAllDay(alldayBox, [...dayEvents.filter((e) => e.allDay), ...tasksDue(date)], markers);
 
   // Stretch the timeline to fit early or late events
   const dayStart = startOfDay(date).getTime();
@@ -184,9 +186,13 @@ function eventBlock(ev, heightPx) {
   block.setAttribute("aria-label", ev.title + ", " + time.textContent);
   if (heightPx < 40) block.classList.add("short");
   block.addEventListener("click", () => openEventSheet(ev));
-  if (ev.cat !== "study") return block;
+  // Finished blocks fade back; the one happening now stands out
+  const nowMs = Date.now();
+  if (ev.endMs <= nowMs) block.classList.add("is-past");
+  else if (ev.startMs <= nowMs) block.classList.add("is-now");
+  if (!hasTimer(ev)) return block;
 
-  // Study blocks get a play button (no separate study button anywhere else)
+  // Study and hifz blocks get a play button (no separate study button anywhere else)
   const logged = loggedFor(ev);
   if (logged >= 60000) {
     const em = document.createElement("em");
@@ -195,7 +201,7 @@ function eventBlock(ev, heightPx) {
     block.appendChild(em);
   }
   const wrap = document.createElement("div");
-  wrap.className = "event-wrap";
+  wrap.className = "event-wrap cat-" + ev.cat;
   wrap.style.height = block.style.height;
   block.style.height = "";
   const isRunning = !!(timer.running && timer.running.eventId === ev.id);
@@ -209,8 +215,33 @@ function eventBlock(ev, heightPx) {
   play.addEventListener("click", (e) => { e.stopPropagation(); if (isRunning) stopSession(); else startSession(ev); });
   if (heightPx < 40) wrap.classList.add("short");
   wrap.append(block, play);
+  if (!isHifz(ev)) return wrap;
+
+  // Hifz is ticked off inside its block (it never appears as a to-do)
+  const key = hifzKey(ev);
+  const ticked = state.doneEvents.has(key);
+  const tick = document.createElement("button");
+  tick.type = "button";
+  tick.className = "tick";
+  tick.setAttribute("aria-pressed", String(ticked));
+  tick.setAttribute("aria-label", (ticked ? "Mark not done: " : "Mark done: ") + ev.title);
+  tick.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (!ticked) playTick();
+    setEventDone({ id: key, title: ev.title }, !ticked);
+  });
+  wrap.classList.add("has-tick");
+  if (ticked) wrap.classList.add("is-ticked");
+  wrap.appendChild(tick);
   return wrap;
 }
+
+// Blocks that can be timed: study blocks, and hifz / memorisation blocks
+const HIFZ_WORDS = /hifz|hifdh|ḥifẓ|memori[sz]/i;
+function isHifz(ev) { return ev.cat === "islamic" && HIFZ_WORDS.test(ev.title); }
+function hasTimer(ev) { return ev.cat === "study" || isHifz(ev); }
+// One tick per day, even if the block repeats daily
+function hifzKey(ev) { return "hifz:" + ev.id + ":" + ymd(new Date(ev.startMs)); }
 
 function renderTimeline() {
   return drawDay($("timeline"), $("allday"), new Date(), { emptyText: "Nothing scheduled today. Enjoy the open time." });
@@ -334,6 +365,30 @@ function renameTask(task, raw) {
   save(fb.updateDoc(taskRef(task.id), { title, updatedAt: Date.now() }));
 }
 
+function setTaskDue(task, due) {
+  const value = /^\d{4}-\d{2}-\d{2}$/.test(due || "") ? due : null;
+  if (value === (task.due || null)) return;
+  save(fb.updateDoc(taskRef(task.id), { due: value, updatedAt: Date.now() }));
+}
+
+// "2026-11-17" -> "Today", "Tomorrow", "Tue, Nov 17"
+function dueLabel(due) {
+  const [y, m, d] = due.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const diff = Math.round((date - startOfDay(new Date())) / 86400000);
+  if (diff === 0) return "Today";
+  if (diff === 1) return "Tomorrow";
+  if (diff === -1) return "Yesterday";
+  return date.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+}
+
+// Open tasks due on a day, shaped like all-day calendar items so they show as chips there
+function tasksDue(date) {
+  const key = ymd(date), s = startOfDay(date).getTime();
+  return openTasks().filter((t) => t.due === key)
+    .map((t) => ({ id: "task:" + t.id, title: t.title, allDay: true, cat: "task", task: t, startMs: s, endMs: s + 86400000 }));
+}
+
 function deleteTask(task) {
   save(fb.updateDoc(taskRef(task.id), { deleted: true, deletedAt: Date.now(), updatedAt: Date.now() }));
   toast("Task deleted", "Undo", () => {
@@ -358,8 +413,15 @@ function taskItem(task) {
   check.setAttribute("aria-label", (task.done ? "Mark not done: " : "Mark done: ") + task.title);
   check.setAttribute("aria-pressed", task.done ? "true" : "false");
   check.addEventListener("click", () => {
-    li.classList.add(task.done ? "uncheck-anim" : "check-anim");
-    setTimeout(() => toggleTask(task), task.done ? 0 : 260);
+    if (task.done) { toggleTask(task); return; }
+    li.classList.add("check-anim");
+    // Let the tick land, then fold the row away before the list redraws
+    setTimeout(() => {
+      li.style.height = li.offsetHeight + "px";
+      void li.offsetHeight;
+      li.classList.add("collapsing");
+      setTimeout(() => toggleTask(task), 190);
+    }, 260);
   });
 
   // Tap the name to rename the task
@@ -381,6 +443,24 @@ function taskItem(task) {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); editTask(task, text); }
   });
 
+  // Due date: tap to pick one. Tasks with a date also show on the calendar that day.
+  const dueWrap = document.createElement("span");
+  const overdue = !!task.due && !task.done && task.due < ymd(new Date());
+  dueWrap.className = "due" + (task.due ? " has-due" : "") + (overdue ? " is-over" : "");
+  const dueText = document.createElement("span");
+  dueText.setAttribute("aria-hidden", "true");
+  if (task.due) dueText.textContent = dueLabel(task.due);
+  else dueText.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg>';
+  const picker = document.createElement("input");
+  picker.type = "date";
+  picker.className = "due-input";
+  picker.value = task.due || "";
+  picker.setAttribute("aria-label", (task.due ? "Due " + dueLabel(task.due) + ". Change" : "Add a due date") + ": " + task.title);
+  picker.addEventListener("click", () => { try { picker.showPicker(); } catch (e) { /* the tap itself opens it */ } });
+  picker.addEventListener("change", () => { setTaskDue(task, picker.value); picker.blur(); });
+  picker.addEventListener("blur", () => { picker.classList.remove("due-input"); renderTasks(); });
+  dueWrap.append(dueText, picker);
+
   const del = document.createElement("button");
   del.type = "button";
   del.className = "del";
@@ -388,7 +468,7 @@ function taskItem(task) {
   del.textContent = "×";
   del.addEventListener("click", () => deleteTask(task));
 
-  li.append(check, text, del);
+  li.append(check, text, dueWrap, del);
   return li;
 }
 
@@ -415,7 +495,10 @@ function editTask(task, titleEl) {
   input.focus();
   input.select();
 }
-const isEditingTask = () => !!(document.activeElement && document.activeElement.classList.contains("task-edit"));
+const isEditingTask = () => {
+  const el = document.activeElement;
+  return !!(el && (el.classList.contains("task-edit") || el.classList.contains("due-input")));
+};
 
 function addForm(placeholder) {
   const form = document.createElement("form");
@@ -510,6 +593,18 @@ function renderTodoPage() {
   }
   host.appendChild(addForm("Add a task"));
 
+  // Quizzes and assignments from your calendar (Canvas). Ticking one here clears it there too.
+  const upcoming = upcomingDeadlines();
+  if (upcoming.length) {
+    const h = document.createElement("h3");
+    h.className = "todo-section";
+    h.textContent = "Deadlines · next 2 weeks";
+    const ul = document.createElement("ul");
+    ul.className = "tasks";
+    upcoming.forEach((ev) => ul.appendChild(upcomingItem(ev)));
+    host.append(h, ul);
+  }
+
   if (done.length) {
     const toggle = document.createElement("button");
     toggle.type = "button";
@@ -545,10 +640,45 @@ function renderTodoPage() {
   }
 }
 
+const DEADLINE_DAYS_AHEAD = 14;
+function upcomingDeadlines() {
+  if (!state.events.length) return [];
+  const from = startOfDay(new Date()).getTime(), to = addDays(startOfDay(new Date()), DEADLINE_DAYS_AHEAD + 1).getTime();
+  const list = state.events.filter((e) => e.cat === "due" && e.startMs >= from && e.startMs < to && !state.doneEvents.has(e.id));
+  return dedupe(list).sort((a, b) => a.startMs - b.startMs);
+}
+function upcomingItem(ev) {
+  const li = document.createElement("li");
+  li.className = "task";
+  const check = document.createElement("button");
+  check.type = "button";
+  check.className = "check";
+  check.setAttribute("aria-label", "Mark done: " + ev.title);
+  check.setAttribute("aria-pressed", "false");
+  check.addEventListener("click", () => {
+    li.classList.add("check-anim");
+    playTick();
+    setTimeout(() => markEventDone(ev), 260);
+  });
+  const text = document.createElement("span");
+  text.className = "task-title";
+  text.tabIndex = 0;
+  text.setAttribute("role", "button");
+  text.setAttribute("aria-label", "Details: " + ev.title);
+  text.textContent = ev.title;
+  text.addEventListener("click", () => openEventSheet(ev));
+  text.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openEventSheet(ev); } });
+  const due = document.createElement("span");
+  due.className = "due has-due";
+  due.textContent = dueLabel(ymd(new Date(ev.startMs))) + (ev.allDay ? "" : " · " + fmtTime(ev.startMs));
+  li.append(check, text, due);
+  return li;
+}
+
 const DONE_DEADLINE_DAYS = 30;
 function recentDoneDeadlines() {
   const since = Date.now() - DONE_DEADLINE_DAYS * 86400000;
-  return state.doneList.filter((d) => (d.updatedAt || 0) >= since).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  return state.doneList.filter((d) => (d.updatedAt || 0) >= since && !d.eventId.startsWith("hifz:")).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 }
 
 function deadlineItem(d) {
@@ -575,7 +705,9 @@ function renderTasks() {
   renderTodayCard();
   renderTodoPage();
   renderSummary();
+  if (!drawingCalendar) renderCalendar();   // tasks with a due date show on the calendar
 }
+let drawingCalendar = false;
 
 // ================================================================ AUTH
 const AUTH_MESSAGES = {
@@ -769,8 +901,9 @@ async function startData() {
     showSignIn(!user);
     stopDone();
     stopSessions();
-    if (user) { startTasks(user); startDone(user); startSessions(user); loadCalendarSettings(user); }
+    if (user) { startTasks(user); startDone(user); startSessions(user); loadCalendarSettings(user); loadKitLinks(); }
     else {
+      state.kitLinks = {};
       renderTasks();
       state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
     }
@@ -882,9 +1015,20 @@ function renderAllDay(box, allDay, markers) {
 function eventChip(ev, text) {
   const chip = document.createElement("button");
   chip.type = "button";
-  const doable = ev.cat === "due";
+  const doable = ev.cat === "due" || ev.cat === "task";
   chip.className = "chip cat-" + ev.cat + (doable ? " chip-done-able" : "");
-  if (doable) {
+  if (ev.cat === "task") {
+    chip.title = "Mark done";
+    chip.setAttribute("aria-label", "Task: " + text + ". Tap to mark done");
+    const check = document.createElement("span");
+    check.className = "chip-check";
+    check.setAttribute("aria-hidden", "true");
+    chip.appendChild(check);
+    chip.addEventListener("click", () => {
+      toggleTask(ev.task);
+      toast("Task done", "Undo", () => save(fb.updateDoc(taskRef(ev.task.id), { done: false, doneAt: null, updatedAt: Date.now() })));
+    });
+  } else if (doable) {
     chip.title = "Mark done";
     chip.setAttribute("aria-label", text + ". Tap to mark done");
     const check = document.createElement("span");
@@ -918,6 +1062,7 @@ function daysLeftText(ev) {
 
 function renderExamCard() {
   const host = $("exam-card");
+  if (examKitEditing && host.contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
   host.textContent = "";
   if (state.calStatus === "loading" && !state.events.length) return skeleton(host);
   const exam = nextExam();
@@ -940,6 +1085,74 @@ function renderExamCard() {
   when.textContent = new Date(exam.startMs).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" }) +
     (exam.allDay ? "" : " · " + fmtTime(exam.startMs));
   host.append(name, big, when);
+
+  // Exam kit: one tap opens it. The link is saved per exam name and syncs.
+  const key = kitKey(exam);
+  const link = state.kitLinks[key];
+  const row = document.createElement("div");
+  row.className = "kit-row";
+  if (link && !examKitEditing) {
+    const open = document.createElement("a");
+    open.className = "btn-primary kit-open";
+    open.href = link; open.target = "_blank"; open.rel = "noopener";
+    open.textContent = "Open exam kit";
+    const change = document.createElement("button");
+    change.type = "button"; change.className = "btn-link"; change.textContent = "Change link";
+    change.addEventListener("click", () => { examKitEditing = true; renderExamCard(); });
+    row.append(open, change);
+  } else if (examKitEditing) {
+    const form = document.createElement("form");
+    form.className = "kit-form";
+    form.noValidate = true;   // our own message below, not the browser's bubble
+    const input = document.createElement("input");
+    input.type = "url"; input.inputMode = "url"; input.placeholder = "Paste the exam kit link";
+    input.value = link || ""; input.autocapitalize = "off"; input.spellcheck = false;
+    input.setAttribute("aria-label", "Exam kit link for " + exam.title);
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "submit"; saveBtn.className = "btn-primary"; saveBtn.textContent = "Save";
+    const err = document.createElement("p");
+    err.className = "form-error"; err.setAttribute("role", "alert");
+    form.append(input, saveBtn);
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const url = input.value.trim();
+      if (url && !/^https:\/\/[^\s]+$/i.test(url)) { err.textContent = "That doesn't look like a link. It should start with https://"; return; }
+      examKitEditing = false;
+      saveKitLink(key, url);
+    });
+    const cancel = document.createElement("button");
+    cancel.type = "button"; cancel.className = "btn-link"; cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => { examKitEditing = false; renderExamCard(); });
+    row.append(form, err, cancel);
+    setTimeout(() => input.focus(), 0);
+  } else {
+    const add = document.createElement("button");
+    add.type = "button"; add.className = "btn-link"; add.textContent = "Add exam kit link";
+    add.addEventListener("click", () => { examKitEditing = true; renderExamCard(); });
+    row.appendChild(add);
+  }
+  host.appendChild(row);
+}
+let examKitEditing = false;
+const kitKey = (exam) => exam.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80) || "exam";
+function kitsRef() { return fb.doc(fb.db, "users", state.user.uid, "settings", "kits"); }
+function saveKitLink(key, url) {
+  const links = { ...state.kitLinks };
+  if (url) links[key] = url; else delete links[key];
+  state.kitLinks = links;
+  renderExamCard();
+  save(fb.setDoc(kitsRef(), { links, updatedAt: Date.now() }));
+}
+async function loadKitLinks() {
+  state.kitLinks = {};
+  try {
+    const snap = await fb.getDoc(kitsRef());
+    const links = snap.exists() ? snap.data().links : null;
+    if (links && typeof links === "object") {
+      state.kitLinks = Object.fromEntries(Object.entries(links).filter(([, v]) => typeof v === "string" && /^https:\/\//i.test(v)));
+    }
+  } catch (e) { console.warn("Couldn't read exam kit links:", e); }
+  renderExamCard();
 }
 
 // ================================================================ CALENDAR TAB
@@ -957,12 +1170,31 @@ const cal = {
   anchor: null,           // Mac only: the first day showing on the left
   anchorFrac: 0,          // ...and how far past it the strip is scrolled, in days
 };
-function savedView() { try { return localStorage.getItem("hb-cal-view") === "day" ? "day" : "week"; } catch (e) { return "week"; } }
+function savedView() {
+  try { const v = localStorage.getItem("hb-cal-view"); return v === "day" || v === "month" ? v : "week"; } catch (e) { return "week"; }
+}
+const startOfMonth = (d) => new Date(d.getFullYear(), d.getMonth(), 1);
+const addMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
 cal.anchor = cal.view === "day" ? startOfDay(new Date()) : startOfWeek(new Date());
+cal.month = new Date(new Date().getFullYear(), new Date().getMonth(), 1);   // month view: the month on screen
 
 function setView(view, day) {
   rememberGridScroll();
+  const was = cal.view;
   cal.view = view;
+  if (view === "month") {
+    // Open the month you were looking at
+    if (was !== "month") cal.month = startOfMonth(narrow.matches ? cal.selected : addDays(cal.anchor, was === "day" ? 0 : 3));
+    try { localStorage.setItem("hb-cal-view", view); } catch (e) {}
+    renderCalendarTab();
+    return;
+  }
+  if (was === "month" && !day) {
+    // Back from the month: this week if it's the current month, otherwise the month's first week
+    const today = new Date();
+    day = sameDay(startOfMonth(today), cal.month) ? (view === "day" ? today : startOfWeek(today)) : cal.month;
+    if (view === "week") day = startOfWeek(day);
+  }
   if (day) cal.anchor = startOfDay(day);
   else if (view === "week") cal.anchor = startOfWeek(cal.anchor);
   else if (sameDay(startOfWeek(new Date()), startOfWeek(cal.anchor))) cal.anchor = startOfDay(new Date());   // this week: open today
@@ -975,9 +1207,11 @@ function setView(view, day) {
 }
 // Forward/back one step. Mac: glide a week (a day in the day view). iPhone: a week.
 function stepCalendar(dir) {
+  if (cal.view === "month") { cal.month = addMonths(cal.month, dir); renderCalendarTab(); return; }
   const sc = gridScroller();
   if (!narrow.matches && sc && cal.gridLive && grid.colW) {
     const first = Math.round(sc.scrollLeft / grid.colW);
+    grid.gliding = true;   // don't re-centre the strip under a glide that's still going
     sc.scrollTo({ left: (first + dir * grid.per) * grid.colW, behavior: "smooth" });
     return;
   }
@@ -1072,10 +1306,13 @@ function renderCalendarTab() {
   $("cal-title").textContent = dayView
     ? cal.selected.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })
     : mid.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const monthView = cal.view === "month";
+  const step = monthView ? "month" : dayView ? "day" : "week";
   $("view-day").setAttribute("aria-pressed", String(dayView));
-  $("view-week").setAttribute("aria-pressed", String(!dayView));
-  $("wk-prev").setAttribute("aria-label", dayView ? "Previous day" : "Previous week");
-  $("wk-next").setAttribute("aria-label", dayView ? "Next day" : "Next week");
+  $("view-week").setAttribute("aria-pressed", String(!dayView && !monthView));
+  $("view-month").setAttribute("aria-pressed", String(monthView));
+  $("wk-prev").setAttribute("aria-label", "Previous " + step);
+  $("wk-next").setAttribute("aria-label", "Next " + step);
   let status = " ";
   if (state.calStatus === "ready" && state.eventsAt) status = "Updated " + fmtTime(state.eventsAt);
   else if (state.calStatus === "loading") status = "Updating…";
@@ -1086,6 +1323,8 @@ function renderCalendarTab() {
   // A hidden grid can't hold a scroll position, and redrawing it every minute is wasted work.
   if ($("view-calendar").hidden) return;
 
+  $("month-grid").hidden = !monthView;
+  if (monthView) { renderMonth(); return; }
   if (!narrow.matches) { renderWeekGrid(); return; }
   const { events, loading, failed } = weekEvents(ws);
   const prev = state.events;
@@ -1098,6 +1337,7 @@ function renderCalendarTab() {
 }
 
 function renderPhoneWeek(loading, failed) {
+  $("month-grid").hidden = true;
   rememberGridScroll();
   cal.gridLive = false;
   $("week-grid").hidden = true;
@@ -1205,6 +1445,7 @@ function syncGrid() {
 // Scrolling has stopped: remember where, load any weeks that just came into view,
 // and redraw (which also re-centres the strip if you've gone a long way).
 function gridIdle() {
+  grid.gliding = false;
   if (narrow.matches || $("view-calendar").hidden || !cal.gridLive) return;
   rememberGridScroll();
   cal.weekStart = startOfWeek(cal.anchor);
@@ -1215,6 +1456,7 @@ function gridIdle() {
 }
 
 function renderWeekGrid() {
+  $("month-grid").hidden = true;
   $("phone-week").hidden = true;
   const host = $("week-grid");
   host.hidden = false;
@@ -1227,7 +1469,10 @@ function renderWeekGrid() {
   // (Re)centre the strip around the day in view: first time, and when that day nears either end
   let idx = grid.base ? dayIndex(cal.anchor) : -1;
   let place = !cal.gridLive || colW !== grid.colW || per !== grid.per;
-  if (idx < 14 || idx > DAYS_TOTAL - 28) { grid.base = addDays(startOfDay(cal.anchor), -DAYS_BACK); idx = DAYS_BACK; place = true; }
+  // (not while an arrow-button glide is under way: moving the strip then would send the glide somewhere else)
+  if ((idx < 14 || idx > DAYS_TOTAL - 28) && (!grid.gliding || idx < 1 || idx > DAYS_TOTAL - 8)) {
+    grid.base = addDays(startOfDay(cal.anchor), -DAYS_BACK); idx = DAYS_BACK; place = true;
+  }
   grid.colW = colW; grid.per = per;
   host.classList.toggle("is-day", per === 1);
   canvas.style.width = GUTTER + DAYS_TOTAL * colW + "px";
@@ -1274,7 +1519,7 @@ function renderWeekGrid() {
     head.appendChild(c);
 
     // All-day items and deadlines
-    const chips = list.filter((e) => e.allDay || !isBlock(e));
+    const chips = [...tasksDue(d), ...list.filter((e) => e.allDay || !isBlock(e))];
     grid.counts.push(chips.length);
     if (chips.length) {
       const cell = document.createElement("div");
@@ -1308,7 +1553,7 @@ function renderWeekGrid() {
   // The current time, in red, in the time column
   const nowLabel = document.createElement("b");
   nowLabel.className = "wk-now-label";
-  nowLabel.textContent = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  nowLabel.textContent = now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(/\s?[AP]M$/, "");
   nowLabel.style.top = y(nowHours) + "px";
   gutter.appendChild(nowLabel);
 
@@ -1316,7 +1561,7 @@ function renderWeekGrid() {
   // on every redraw would cut off a glide that's still going.
   if (place) {
     scroller.style.scrollSnapType = "none";   // exact placement first, snapping back on after
-    scroller.scrollLeft = (idx + cal.anchorFrac) * colW;
+    scroller.scrollTo({ left: (idx + cal.anchorFrac) * colW, behavior: "instant" });   // "instant" also stops any glide
     if (cal.gridHour === null) {
       // First time: open with the morning in view; later in the day, keep the "now" line in view
       const shown = (scroller.clientHeight - 80) / hourPx;
@@ -1346,6 +1591,99 @@ function renderWeekGrid() {
   }
 }
 
+// ---------- Month view (Mac and iPhone) ----------
+// Mac: each day lists its first few items. iPhone: each day shows coloured dots.
+// Click a day to open it.
+function renderMonth() {
+  rememberGridScroll();
+  cal.gridLive = false;
+  $("week-grid").hidden = true;
+  $("phone-week").hidden = true;
+  const host = $("month-grid");
+  host.hidden = false;
+  host.textContent = "";
+  if (!cal.month) cal.month = startOfMonth(new Date());
+  const first = cal.month;
+  const phone = narrow.matches;
+  $("cal-title").textContent = first.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+
+  const names = document.createElement("div");
+  names.className = "mo-names";
+  ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].forEach((n) => {
+    const d = document.createElement("div");
+    d.textContent = phone ? n[0] : n;
+    names.appendChild(d);
+  });
+  host.appendChild(names);
+
+  const start = startOfWeek(first);
+  const daysIn = new Date(first.getFullYear(), first.getMonth() + 1, 0).getDate();
+  const rows = Math.ceil((first.getDay() + daysIn) / 7);
+  const gridEl = document.createElement("div");
+  gridEl.className = "mo-grid";
+  gridEl.style.setProperty("--rows", rows);
+  const todayMs = startOfDay(new Date()).getTime();
+  const maxItems = 3;
+  let loading = false, failed = false;
+  for (let w = 0; w < rows; w++) {
+    const ws = addDays(start, 7 * w), s = ws.getTime();
+    // Weeks outside the saved range load as the month opens
+    if (!inMainRange(ws) && !cal.cache.has(s)) {
+      const failedAt = cal.failed.get(s);
+      if (cal.loadingWeeks.has(s)) loading = true;
+      else if (failedAt && Date.now() - failedAt < WEEK_RETRY_MS) failed = true;
+      else if (state.calUrl) { fetchWeek(ws); loading = true; }
+    }
+    for (let i = 0; i < 7; i++) {
+      const d = addDays(ws, i);
+      const cell = document.createElement("button");
+      cell.type = "button";
+      cell.className = "mo-day" + (d.getMonth() !== first.getMonth() ? " is-out" : "") + (d.getTime() === todayMs ? " is-today" : "");
+      const list = eventsForDay(d, poolFor(d));
+      const items = [...tasksDue(d), ...list.filter((e) => e.allDay || !isBlock(e)), ...list.filter(isBlock)];
+      const longDate = d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+      cell.setAttribute("aria-label", longDate + (items.length ? ", " + items.length + (items.length === 1 ? " item" : " items") : ""));
+      const num = document.createElement("b");
+      num.textContent = d.getDate();
+      cell.appendChild(num);
+      if (phone) {
+        const dots = document.createElement("span");
+        dots.className = "mo-dots";
+        items.slice(0, 4).forEach((e) => { const dot = document.createElement("i"); dot.className = "cat-" + e.cat; dots.appendChild(dot); });
+        cell.appendChild(dots);
+      } else {
+        items.slice(0, maxItems).forEach((e) => {
+          const row = document.createElement("span");
+          row.className = "mo-ev cat-" + e.cat;
+          row.textContent = (isBlock(e) ? fmtTime(e.startMs).replace(":00", "").replace(" ", "").toLowerCase() + " " : "") + e.title;
+          cell.appendChild(row);
+        });
+        if (items.length > maxItems) {
+          const more = document.createElement("span");
+          more.className = "mo-more";
+          more.textContent = "+" + (items.length - maxItems) + " more";
+          cell.appendChild(more);
+        }
+      }
+      cell.addEventListener("click", () => {
+        if (narrow.matches) { cal.selected = d; cal.weekStart = startOfWeek(d); cal.scrolledPhone = false; }
+        setView(narrow.matches ? "week" : "day", d);
+      });
+      gridEl.appendChild(cell);
+    }
+  }
+  host.appendChild(gridEl);
+  const status = $("cal-status");
+  if (loading) status.textContent = "Loading…";
+  else if (failed) {
+    status.textContent = "Couldn't load part of this month. ";
+    const retry = document.createElement("button");
+    retry.type = "button"; retry.className = "btn-link"; retry.textContent = "Try again";
+    retry.addEventListener("click", () => { cal.failed.clear(); renderCalendarTab(); });
+    status.appendChild(retry);
+  }
+}
+
 // ---------- Event details (opens on tap) ----------
 function openEventSheet(ev) {
   const sheet = $("event-sheet");
@@ -1354,6 +1692,16 @@ function openEventSheet(ev) {
   const day = new Date(ev.startMs).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   $("sheet-when").textContent = ev.allDay ? day + " · All day"
     : day + " · " + fmtTime(ev.startMs) + (ev.endMs > ev.startMs ? " – " + fmtTime(ev.endMs) : "");
+  const now = Date.now();
+  let rel = "";
+  if (!ev.allDay && ev.endMs > ev.startMs) {
+    rel = fmtDuration(ev.endMs - ev.startMs) + " · " +
+      (now < ev.startMs ? "starts in " + fmtAway(ev.startMs - now) : now < ev.endMs ? "ends in " + fmtAway(ev.endMs - now) : "finished");
+  } else if (startOfDay(new Date(ev.startMs)).getTime() >= startOfDay(new Date()).getTime()) {
+    rel = daysLeftText(ev).replace(/^t/, "T").replace(/^in /, "In ");
+  }
+  $("sheet-rel").textContent = rel;
+  $("sheet-rel").hidden = !rel;
   $("sheet-cal").textContent = ev.calendar ? "From " + ev.calendar : "";
   $("sheet-loc").textContent = ev.location || "";
   $("sheet-loc").hidden = !ev.location;
@@ -1361,12 +1709,15 @@ function openEventSheet(ev) {
   $("sheet-close").focus();
 }
 function closeEventSheet() { $("event-sheet").hidden = true; }
+// "20 min", "3 h 5 min", "2 days"
+function fmtAway(ms) { return ms >= 36 * 3600000 ? Math.round(ms / 86400000) + " days" : fmtDuration(Math.max(60000, ms)); }
 
 function wireCalendarTab() {
   $("wk-prev").addEventListener("click", () => stepCalendar(-1));
   $("wk-next").addEventListener("click", () => stepCalendar(1));
   $("view-day").addEventListener("click", () => setView("day"));
   $("view-week").addEventListener("click", () => setView("week"));
+  $("view-month").addEventListener("click", () => setView("month"));
 
   // Mac keyboard: ← → move, T today, D day view, W week view
   document.addEventListener("keydown", (e) => {
@@ -1379,17 +1730,21 @@ function wireCalendarTab() {
     else if (e.key === "t" || e.key === "T") $("wk-today").click();
     else if (e.key === "d" || e.key === "D") setView("day");
     else if (e.key === "w" || e.key === "W") setView("week");
+    else if (e.key === "m" || e.key === "M") setView("month");
     else return;
     e.preventDefault();
   });
   $("wk-today").addEventListener("click", () => {
+    cal.month = startOfMonth(new Date());
     cal.weekStart = startOfWeek(new Date()); cal.selected = startOfDay(new Date());
+    if (cal.view === "month") { renderCalendarTab(); return; }
     cal.anchor = cal.view === "day" && !narrow.matches ? startOfDay(new Date()) : startOfWeek(new Date());
     cal.anchorFrac = 0;
     // Mac: glide back if this week is still on the strip; otherwise redraw there
     const sc = gridScroller();
     const idx = grid.base ? dayIndex(cal.anchor) : -1;
     if (!narrow.matches && sc && cal.gridLive && idx >= 14 && idx <= DAYS_TOTAL - 28) {
+      grid.gliding = true;
       sc.scrollTo({ left: idx * grid.colW, behavior: "smooth" });
       return;
     }
@@ -1401,6 +1756,20 @@ function wireCalendarTab() {
     cal.editing = true; renderCalendarTab(); $("cal-url").focus();
   });
   $("sheet-close").addEventListener("click", closeEventSheet);
+  const card = $("event-sheet").querySelector(".sheet");
+  let dragY = null;
+  card.addEventListener("touchstart", (e) => { dragY = e.touches[0].clientY; card.style.transition = "none"; }, { passive: true });
+  card.addEventListener("touchmove", (e) => {
+    if (dragY === null) return;
+    card.style.transform = "translateY(" + Math.max(0, e.touches[0].clientY - dragY) + "px)";
+  }, { passive: true });
+  card.addEventListener("touchend", (e) => {
+    if (dragY === null) return;
+    const dy = e.changedTouches[0].clientY - dragY;
+    dragY = null;
+    card.style.transition = ""; card.style.transform = "";
+    if (dy > 90) closeEventSheet();
+  });
   $("event-sheet").addEventListener("click", (e) => { if (e.target.id === "event-sheet") closeEventSheet(); });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeEventSheet(); });
   // Swipe left/right on the iPhone day view to change day
@@ -1418,6 +1787,14 @@ function wireCalendarTab() {
 
 let scrolledToNow = false;
 function renderCalendar() {
+  drawingCalendar = true;
+  try { drawCalendar(); } finally { drawingCalendar = false; }
+}
+function drawCalendar() {
+  // The To-Do page lists calendar deadlines, so it follows the calendar (but never wipes a box you're typing in)
+  const el = document.activeElement;
+  if (!(el && el.closest && el.closest("#todo-full"))) renderTodoPage();
+  renderWindDown();
   const line = renderTimeline();
   if (state.calStatus === "ready" && !scrolledToNow) { scrollToNow(line); scrolledToNow = true; }
   renderExamCard();
@@ -1620,7 +1997,9 @@ function fmtClock(ms) {
 
 // Minutes already logged for a calendar block (shown on the block)
 function loggedFor(ev) {
-  return timer.recent.filter((s) => s.eventId === ev.id && s.status === "done" && s.end)
+  // Same block on the same day (a block that repeats daily shares one id)
+  const day = startOfDay(new Date(ev.startMs)).getTime();
+  return timer.recent.filter((s) => s.eventId === ev.id && s.status === "done" && s.end && startOfDay(new Date(s.start)).getTime() === day)
     .reduce((sum, s) => sum + (s.end - s.start), 0);
 }
 
@@ -1636,7 +2015,7 @@ function startSession(ev) {
   const ref = fb.doc(fb.collection(fb.db, "users", state.user.uid, "sessions"));
   const session = {
     status: "running", start: now, end: null,
-    label: ev.title, course: guessCourse(ev.title), topic: null, method: null,
+    label: ev.title, course: ev.id === null ? ev.title : guessCourse(ev.title), topic: null, method: null,
     eventId: ev.id, eventEnd: ev.endMs, focus: null, note: "", updatedAt: now,
   };
   timer.running = { id: ref.id, ...session };   // show it right away; Firestore catches up
@@ -1653,11 +2032,147 @@ function finishSession(s, endMs, quiet) {
   save(fb.updateDoc(sessionRef(s.id), { status: "done", end, updatedAt: Date.now() }));
   renderTimer();
   renderCalendar();
+  renderStudy();
   if (!quiet) openSessionSheet(done);
 }
 
 function stopSession() {
   if (timer.running) { playTick(); finishSession(timer.running, Date.now(), false); }
+}
+
+// ---------- Study tab: start a session, stats, and the last week's log ----------
+const STATS_DAYS = 35;   // how far back sessions are loaded (enough for streaks and last week)
+const doneSessions = () => timer.recent.filter((s) => s.status === "done" && s.end);
+const sumTime = (list) => list.reduce((sum, s) => sum + (s.end - s.start), 0);
+// Study days in a row, counting back from today (or from yesterday, if today hasn't started yet)
+function studyStreak() {
+  const days = new Set(doneSessions().map((s) => startOfDay(new Date(s.start)).getTime()));
+  let d = startOfDay(new Date());
+  if (!days.has(d.getTime())) d = addDays(d, -1);
+  let n = 0;
+  while (days.has(d.getTime())) { n++; d = addDays(d, -1); }
+  return n;
+}
+function weekStats() {
+  const ws = startOfWeek(new Date()).getTime(), prev = addDays(new Date(ws), -7).getTime();
+  const all = doneSessions();
+  return { thisWeek: sumTime(all.filter((s) => s.start >= ws)), lastWeek: sumTime(all.filter((s) => s.start >= prev && s.start < ws)) };
+}
+
+function renderStudy() {
+  const host = $("study-week");
+  if (!host || $("view-study").hidden) return;
+  host.textContent = "";
+  const weekAgo = addDays(startOfDay(new Date()), -7).getTime();
+  const sessions = doneSessions().filter((s) => s.start >= weekAgo).sort((a, b) => b.start - a.start);
+  if (!doneSessions().length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No sessions yet. Press ▶ on a study block, or start one above.";
+    host.appendChild(p);
+    return;
+  }
+  // Three headline numbers: this week (against last week), streak, sessions
+  const { thisWeek, lastWeek } = weekStats();
+  const streak = studyStreak();
+  const tiles = document.createElement("div");
+  tiles.className = "study-tiles";
+  const tile = (label, value, note, cls) => {
+    const box = document.createElement("div");
+    const l = document.createElement("span"); l.textContent = label;
+    const v = document.createElement("p"); v.className = cls || "study-num"; v.textContent = value;
+    const n = document.createElement("span"); n.textContent = note;
+    box.append(l, v, n);
+    tiles.appendChild(box);
+  };
+  const diff = thisWeek - lastWeek;
+  tile("This week", fmtDuration(thisWeek),
+    lastWeek === 0 ? "Nothing logged last week" : diff >= 0 ? "+" + fmtDuration(diff) + " on last week" : fmtDuration(-diff) + " to match last week", "study-total");
+  tile("Streak", streak + (streak === 1 ? " day" : " days"), streak === 0 ? "Study today to start one" : "in a row");
+  tile("Sessions", String(sessions.length), "in the last 7 days");
+  host.appendChild(tiles);
+  if (!sessions.length) return;
+
+  // Time per course, longest first
+  const byCourse = new Map();
+  sessions.forEach((s) => { const k = s.course || s.label || "Study"; byCourse.set(k, (byCourse.get(k) || 0) + (s.end - s.start)); });
+  const courses = [...byCourse.entries()].sort((a, b) => b[1] - a[1]);
+  const bars = document.createElement("div");
+  bars.className = "study-bars";
+  courses.forEach(([name, ms]) => {
+    const row = document.createElement("div");
+    row.className = "study-bar";
+    const label = document.createElement("span");
+    label.textContent = name;
+    const track = document.createElement("i");
+    track.style.setProperty("--w", Math.max(4, Math.round(100 * ms / courses[0][1])) + "%");
+    const time = document.createElement("b");
+    time.textContent = fmtDuration(ms);
+    row.append(label, track, time);
+    bars.appendChild(row);
+  });
+  host.appendChild(bars);
+
+  // Every session, newest first, grouped by day. Tap one to change its rating or note, or delete it.
+  let lastDay = null, ul = null;
+  sessions.forEach((s) => {
+    const day = startOfDay(new Date(s.start)).getTime();
+    if (day !== lastDay) {
+      lastDay = day;
+      const h = document.createElement("h3");
+      h.className = "study-day";
+      const diff = Math.round((startOfDay(new Date()).getTime() - day) / 86400000);
+      h.textContent = diff === 0 ? "Today" : diff === 1 ? "Yesterday" : new Date(day).toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+      ul = document.createElement("ul");
+      ul.className = "sessions";
+      host.append(h, ul);
+    }
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "session-row";
+    const name = document.createElement("strong");
+    name.textContent = s.course || s.label;
+    const when = document.createElement("span");
+    when.textContent = fmtTime(s.start) + " – " + fmtTime(s.end) + (s.focus ? " · focus " + s.focus + "/5" : "") + (s.note ? " · " + s.note : "");
+    const dur = document.createElement("b");
+    dur.textContent = fmtDuration(s.end - s.start);
+    btn.append(name, when, dur);
+    btn.setAttribute("aria-label", name.textContent + ", " + dur.textContent + ", " + when.textContent + ". Edit");
+    btn.addEventListener("click", () => openSessionSheet(s));
+    li.appendChild(btn);
+    ul.appendChild(li);
+  });
+}
+
+// ---------- End-of-day card (Today screen, from 8 PM) ----------
+function renderWindDown() {
+  const card = $("wind-card");
+  if (!card) return;
+  const now = new Date();
+  const show = now.getHours() >= 20 && state.status === "ready";
+  card.hidden = !show;
+  if (!show) return;
+  const host = $("wind");
+  host.textContent = "";
+  const today = startOfDay(now).getTime();
+  const line = (text) => { const p = document.createElement("p"); p.textContent = text; host.appendChild(p); };
+  const doneToday = state.tasks.filter((t) => !t.deleted && t.done && t.doneAt >= today).length;
+  const studied = sumTime(doneSessions().filter((s) => s.start >= today));
+  const streak = studyStreak();
+  if (doneToday) line("✓ " + doneToday + (doneToday === 1 ? " task done" : " tasks done"));
+  if (studied >= 60000) line("✓ " + fmtDuration(studied) + " studied");
+  if (streak >= 2) line(streak + " study days in a row");
+  if (!doneToday && studied < 60000) line("A quiet day. That's allowed.");
+  // Tomorrow's first block
+  if (state.calStatus === "ready") {
+    const tomorrow = addDays(startOfDay(now), 1);
+    const first = eventsForDay(tomorrow, poolFor(tomorrow)).filter(isBlock)[0];
+    const p = document.createElement("p");
+    p.className = "wind-next";
+    p.textContent = first ? "Tomorrow starts with " + first.title + " at " + fmtTime(first.startMs) + "." : "Nothing on the calendar tomorrow.";
+    host.appendChild(p);
+  }
 }
 
 // ---------- Running timer bar ----------
@@ -1695,7 +2210,9 @@ function closeSessionSheet(saveIt) {
   const focus = pressed ? Number(pressed.dataset.v) : null;
   const note = $("session-note").value.trim().slice(0, 500);
   if (focus !== s.focus || note !== (s.note || "")) {
+    timer.recent = timer.recent.map((x) => (x.id === s.id ? { ...x, focus, note } : x));
     save(fb.updateDoc(sessionRef(s.id), { focus, note, updatedAt: Date.now() }));
+    renderStudy();
   }
 }
 
@@ -1707,6 +2224,7 @@ function deleteSheetSession() {
   timer.recent = timer.recent.filter((x) => x.id !== s.id);
   save(fb.updateDoc(sessionRef(s.id), { status: "deleted", updatedAt: Date.now() }));
   renderCalendar();
+  renderStudy();
   toast("Session deleted", "Undo", () => {
     save(fb.updateDoc(sessionRef(s.id), { status: "done", updatedAt: Date.now() }));
   });
@@ -1753,10 +2271,11 @@ function startSessions(user) {
     renderTimer();
     renderCalendar();
   }, (e) => console.warn("Couldn't load the timer:", e));
-  const since = addDays(startOfDay(new Date()), -7).getTime();
+  const since = addDays(startOfDay(new Date()), -STATS_DAYS).getTime();
   timer.unsubRecent = fb.onSnapshot(fb.query(col, fb.where("start", ">=", since)), (snap) => {
     timer.recent = snap.docs.map((d) => ({ id: d.id, ...d.data() })).filter((s) => s.status === "done");
     renderCalendar();
+    renderStudy();
   }, (e) => console.warn("Couldn't load study sessions:", e));
 }
 
@@ -1773,6 +2292,14 @@ function stopSessions() {
 
 function wireTimer() {
   $("timer-stop").addEventListener("click", stopSession);
+  // Study tab: time something that isn't on the calendar
+  $("free-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const what = $("free-what").value.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (!what) { $("free-what").focus(); return; }
+    startSession({ id: null, title: what, endMs: null });
+    $("free-what").value = "";
+  });
   $("session-save").addEventListener("click", () => closeSessionSheet(true));
   $("session-delete").addEventListener("click", deleteSheetSession);
   $("session-sheet").addEventListener("click", (e) => { if (e.target.id === "session-sheet") closeSessionSheet(true); });

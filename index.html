@@ -64,6 +64,10 @@
               <h2>Upcoming exam</h2>
               <div id="exam-card"><p class="empty">No exams in the next 30 days.</p></div>
             </div>
+            <div class="card" id="wind-card" hidden>
+              <h2>Today, wrapped up</h2>
+              <div id="wind" class="wind"></div>
+            </div>
           </aside>
         </div>
       </section>
@@ -78,6 +82,7 @@
             <div class="view-switch" role="group" aria-label="Calendar view">
               <button type="button" class="nav-btn" id="view-day" aria-pressed="false">Day</button>
               <button type="button" class="nav-btn" id="view-week" aria-pressed="true">Week</button>
+              <button type="button" class="nav-btn" id="view-month" aria-pressed="false">Month</button>
             </div>
             <button type="button" class="nav-btn" id="wk-prev" aria-label="Previous week">‹</button>
             <button type="button" class="nav-btn today-btn" id="wk-today">Today</button>
@@ -99,6 +104,8 @@
         <div id="cal-views">
           <!-- Mac: week grid -->
           <div class="card week-card" id="week-grid" hidden></div>
+          <!-- Mac and iPhone: month -->
+          <div class="card month-card" id="month-grid" hidden></div>
           <!-- iPhone: week strip + day -->
           <div id="phone-week" hidden>
             <div class="week-strip" id="week-strip"></div>
@@ -128,7 +135,21 @@
 
       <section id="view-study" class="view" hidden>
         <header class="day-head"><h1 class="date">Study</h1></header>
-        <div class="card"><p class="empty">Study tools are coming in a later version.</p></div>
+        <div class="study-grid">
+          <div class="card">
+            <h2>Start a session</h2>
+            <p class="empty">For study that isn't on your calendar. Blocks on the calendar have their own ▶.</p>
+            <form id="free-form" class="cal-form" novalidate>
+              <label for="free-what" class="sr-only">What are you studying?</label>
+              <input id="free-what" type="text" maxlength="80" autocomplete="off" placeholder="What are you studying? e.g. Chem 1130">
+              <button type="submit" class="btn-primary">Start</button>
+            </form>
+          </div>
+          <div class="card">
+            <h2>Study time</h2>
+            <div id="study-week"><p class="empty">No sessions in the last 7 days.</p></div>
+          </div>
+        </div>
       </section>
       <section id="view-materials" class="view" hidden>
         <header class="day-head"><h1 class="date">Materials</h1></header>
@@ -146,6 +167,7 @@
         <button type="button" id="sheet-close" class="sheet-close" aria-label="Close">×</button>
       </div>
       <p id="sheet-when"></p>
+      <p id="sheet-rel" class="muted-line" hidden></p>
       <p id="sheet-loc" class="muted-line" hidden></p>
       <p id="sheet-cal" class="muted-line"></p>
     </div>
