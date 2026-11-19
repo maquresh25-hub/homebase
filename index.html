@@ -60,6 +60,10 @@
               <h2>To-Do</h2>
               <div id="today-todo" class="todo-host"></div>
             </div>
+            <div class="card week-card-goals">
+              <h2>This week</h2>
+              <div id="goals"><p class="empty">Loading…</p></div>
+            </div>
             <div class="card">
               <h2>Upcoming exam</h2>
               <div id="exam-card"><p class="empty">No exams in the next 30 days.</p></div>
@@ -146,6 +150,20 @@
             </form>
           </div>
           <div class="card">
+            <h2>Missed questions</h2>
+            <p class="empty">Log every question you get wrong. Redo it in 2 days, then in a week. Get it right both times and it's cleared.</p>
+            <form id="miss-form" class="miss-form" novalidate>
+              <label for="miss-course" class="sr-only">Course</label>
+              <input id="miss-course" type="text" maxlength="40" autocomplete="off" placeholder="Course, e.g. Chem 1130">
+              <label for="miss-q" class="sr-only">Question</label>
+              <input id="miss-q" type="text" maxlength="300" autocomplete="off" placeholder="The question, e.g. Ch 10 #6: what does NaBH4 donate?">
+              <label for="miss-fix" class="sr-only">What you got wrong</label>
+              <input id="miss-fix" type="text" maxlength="300" autocomplete="off" placeholder="The right answer or your mistake (optional)">
+              <button type="submit" class="btn-primary">Add</button>
+            </form>
+            <div id="miss-list"></div>
+          </div>
+          <div class="card">
             <h2>Study time</h2>
             <div id="study-week"><p class="empty">No sessions in the last 7 days.</p></div>
           </div>
@@ -193,6 +211,13 @@
         <button type="button" data-v="4" aria-pressed="false">4</button>
         <button type="button" data-v="5" aria-pressed="false">5</button>
       </div>
+      <p class="sheet-label">What did you mostly do? <span class="muted-line">(optional)</span></p>
+      <div id="method-row" class="chip-row" role="group" aria-label="Study method">
+        <button type="button" data-v="problems" aria-pressed="false">Problems</button>
+        <button type="button" data-v="notes" aria-pressed="false">Notes</button>
+        <button type="button" data-v="video" aria-pressed="false">Videos</button>
+        <button type="button" data-v="flashcards" aria-pressed="false">Flashcards</button>
+      </div>
       <label for="session-note" class="sheet-label">Note <span class="muted-line">(optional)</span></label>
       <input id="session-note" class="sheet-input" type="text" maxlength="500" placeholder="e.g. Finished Ch. 10 practice set">
       <button type="button" id="session-save" class="btn-primary sheet-btn">Done</button>
@@ -217,6 +242,22 @@
       <button type="button" id="stale-now" class="btn-link sheet-link">Stop it now instead</button>
       <button type="button" id="stale-later" class="btn-link sheet-link">I'm still going</button>
     </div>
+  </div>
+
+  <!-- Sunday review: three questions, about 20 minutes -->
+  <div id="review-sheet" class="sheet-backdrop" hidden>
+    <form id="review-form" class="sheet" role="dialog" aria-modal="true" aria-labelledby="review-title" novalidate>
+      <h2 id="review-title" class="sheet-big">Sunday review</h2>
+      <p class="muted-line flush" id="review-sub">Be honest. Nobody else reads this.</p>
+      <label for="review-finished" class="sheet-label">What did I actually finish last week?</label>
+      <textarea id="review-finished" class="sheet-input" rows="2" maxlength="1000"></textarea>
+      <label for="review-slip" class="sheet-label">Where was I arrogant or distracted?</label>
+      <textarea id="review-slip" class="sheet-input" rows="2" maxlength="1000"></textarea>
+      <label for="review-fix" class="sheet-label">One fix for this week</label>
+      <input id="review-fix" class="sheet-input" type="text" maxlength="200" placeholder="e.g. Problems before videos, every block">
+      <button type="submit" class="btn-primary sheet-btn">Save review</button>
+      <button type="button" id="review-cancel" class="btn-link sheet-link">Not now</button>
+    </form>
   </div>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
