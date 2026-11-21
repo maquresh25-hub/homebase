@@ -10,6 +10,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Homebase">
+  <script>try{var L=localStorage,p=L.getItem("hb-theme"),l=L.getItem("hb-theme-last");document.documentElement.dataset.theme=p==="light"||p==="dark"?p:L.getItem("hb-night")==="sunset"&&l?l:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(e){}</script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -41,12 +42,14 @@
       <a href="#todo" data-tab="todo"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span>To-Do</span></a>
       <a href="#study" data-tab="study"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5 12 4l8 3.5-8 3.5z"/><path d="M7 9.3V14c0 1.4 2.2 2.8 5 2.8s5-1.4 5-2.8V9.3M20 7.5V13"/></svg><span>Study</span></a>
       <a href="#materials" data-tab="materials"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span>Materials</span></a>
+      <a href="#settings" data-tab="settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg><span>Settings</span></a>
     </nav>
 
     <main id="main">
       <!-- TODAY -->
       <section id="view-today" class="view" aria-labelledby="today-title">
         <header class="day-head">
+          <a href="#settings" class="gear" aria-label="Settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg></a>
           <h1 id="today-title" class="date"></h1>
           <p class="summary" id="today-summary">&nbsp;</p>
         </header>
@@ -172,6 +175,23 @@
       <section id="view-materials" class="view" hidden>
         <header class="day-head"><h1 class="date">Materials</h1></header>
         <div class="card"><p class="empty">Materials are coming in a later version.</p></div>
+      </section>
+      <!-- SETTINGS -->
+      <section id="view-settings" class="view" hidden>
+        <header class="day-head"><h1 class="date">Settings</h1></header>
+        <div class="card settings">
+          <h2>Appearance</h2>
+          <label class="set-row"><span>Theme<small>Automatic follows the choice below</small></span>
+            <select id="set-theme"><option value="auto">Automatic</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
+          <label class="set-row" id="set-night-row"><span>Automatic goes dark<small>With your device's dark mode, or when the sun sets</small></span>
+            <select id="set-night"><option value="system">With dark mode</option><option value="sunset">At sunset</option></select></label>
+          <label class="set-row"><span>Time and weather colours<small>A faint tint behind the page that follows the sky</small></span>
+            <select id="set-colours"><option value="on">On</option><option value="off">Off</option></select></label>
+          <div class="set-row"><span>Location<small id="set-loc-note">Not set. Colours follow the clock only.</small></span>
+            <button type="button" class="nav-btn" id="set-loc">Use my location</button></div>
+          <p class="set-foot" id="set-now"></p>
+          <p class="set-foot">These settings are saved on this device. Your location is rounded to the nearest town and only used to ask for the weather. Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a>.</p>
+        </div>
       </section>
     </main>
   </div>

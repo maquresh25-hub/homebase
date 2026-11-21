@@ -19,7 +19,7 @@ const DEFAULT_START = 8;  // timeline normally runs 8 AM
 const DEFAULT_END = 22;   // to 10 PM, and stretches to fit earlier or later events
 const EVENTS_CACHE = "hb-events-v1";      // this device's copy of the last calendar fetch
 const REFRESH_MS = 10 * 60 * 1000;        // refetch the calendar every 10 minutes
-const TABS = ["today", "calendar", "todo", "study", "materials"];
+const TABS = ["today", "calendar", "todo", "study", "materials", "settings"];
 const MAX_TITLE = 200;
 const TODAY_LIMIT = 6;  // tasks shown on the Today card
 
@@ -57,6 +57,7 @@ function showTab() {
     else link.removeAttribute("aria-current");
   });
   if (tab === "study") { renderStudy(); renderMissed(); }
+  if (tab === "settings") renderSettings();
   if (tab === "calendar") renderCalendarTab();
   else cal.gridLive = false;   // a hidden calendar loses its scroll position; it's put back on return
 }
@@ -1626,7 +1627,8 @@ function renderMonth() {
   gridEl.className = "mo-grid";
   gridEl.style.setProperty("--rows", rows);
   const todayMs = startOfDay(new Date()).getTime();
-  const maxItems = 3;
+  const rowH = Math.max(96, (window.innerHeight - 232) / rows);
+  const maxItems = Math.max(2, Math.floor((rowH - 60) / 20.5));
   let loading = false, failed = false;
   for (let w = 0; w < rows; w++) {
     const ws = addDays(start, 7 * w), s = ws.getTime();
@@ -2427,6 +2429,7 @@ function updateWeek(fields) {
   // Show it right away; Firestore syncs in the background
   const merged = { ...growth.week, ...fields };
   if (fields.humble) merged.humble = { ...(growth.week.humble || {}), ...fields.humble };
+  if (fields.hifz) merged.hifz = { ...(growth.week.hifz || {}), ...fields.hifz };
   growth.week = merged;
   renderGoals();
   saveGrowth(fb.setDoc(growthRef(), { ...fields, updatedAt: Date.now() }, { merge: true }));
@@ -2673,6 +2676,24 @@ function renderGoals() {
     toggle: (on) => updateWeek({ humble: { [today]: on } }),
   });
 
+  // Daily: hifz, ticked here because it isn't a calendar block
+  const hifz = w.hifz || {};
+  const hdots = document.createElement("span");
+  hdots.className = "goal-dots";
+  for (let i = 0; i < 7; i++) {
+    const d = addDays(ws, i);
+    const dot = document.createElement("i");
+    if (hifz[ymd(d)]) dot.className = "on";
+    if (ymd(d) === today) dot.classList.add("today");
+    hdots.appendChild(dot);
+  }
+  const hdays = Object.keys(hifz).filter((k) => hifz[k]).length;
+  hdots.setAttribute("aria-label", hdays + " of 7 days this week");
+  goalRow(host, {
+    label: "Hifz today", note: hdays + " of 7 days this week", done: !!hifz[today], extra: hdots,
+    toggle: (on) => updateWeek({ hifz: { [today]: on } }),
+  });
+
   // Weekly: meetups
   const meet = Number(w.meetups) || 0;
   const step = document.createElement("span");
@@ -2796,6 +2817,139 @@ function wireGrowth() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("review-sheet").hidden) closeReview(); });
 }
 
+// ================================================================ SETTINGS: theme, time and weather colours
+// Saved on this device (localStorage), so the Mac and the iPhone can differ.
+const look = { wx: null, fetching: false };
+const WX_MS = 60 * 60 * 1000;
+const MOODS = { dawn: "#F0A58C", day: "#8FBBEA", golden: "#EDB95E", dusk: "#A483D6", night: "#5468B5" };
+const SKIES = { cloud: "#9AA3AD", rain: "#6F8FA8", snow: "#C9D6E2", storm: "#5B5F7A" };
+const SKY_NAMES = { clear: "Clear", cloud: "Cloudy", rain: "Rain", snow: "Snow", storm: "Storm" };
+function pref(k, d) { try { return localStorage.getItem("hb-" + k) || d; } catch (e) { return d; } }
+function setPref(k, v) { try { localStorage.setItem("hb-" + k, v); } catch (e) {} }
+function savedPlace() { try { const p = JSON.parse(pref("loc", "null")); return p && isFinite(p.lat) && isFinite(p.lon) ? p : null; } catch (e) { return null; } }
+function wantsSky() { return pref("colours", "on") === "on" || (pref("theme", "auto") === "auto" && pref("night", "system") === "sunset"); }
+
+// Sunrise and sunset for today. Real ones when the weather has loaded (yesterday's are close enough), else 6:30 and 6:00.
+function sunTimes(now) {
+  const d = startOfDay(now).getTime(), w = look.wx;
+  if (w && w.sunrise && w.sunset) return { rise: d + (w.sunrise - startOfDay(new Date(w.sunrise)).getTime()), set: d + (w.sunset - startOfDay(new Date(w.sunset)).getTime()), real: true };
+  return { rise: d + 6.5 * 3600000, set: d + 18 * 3600000, real: false };
+}
+function moodAt(t, sun) {
+  const M = 60000;
+  if (t < sun.rise - 45 * M || t >= sun.set + 45 * M) return "night";
+  if (t < sun.rise + 45 * M) return "dawn";
+  if (t >= sun.set - 15 * M) return "dusk";
+  if (t >= sun.set - 90 * M) return "golden";
+  return "day";
+}
+// WMO weather codes, as Open-Meteo returns them
+function skyKind(code) {
+  if (code == null) return null;
+  if (code >= 95) return "storm";
+  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
+  if (code >= 51) return "rain";
+  if (code === 3 || code === 45 || code === 48) return "cloud";
+  return "clear";
+}
+
+function applyLook() {
+  const root = document.documentElement, now = new Date(), t = now.getTime(), sun = sunTimes(now);
+  const theme = pref("theme", "auto");
+  let systemDark = false;
+  try { systemDark = matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) {}
+  const dark = theme === "dark" || (theme === "auto" && (pref("night", "system") === "sunset" ? (t < sun.rise || t >= sun.set) : systemDark));
+  root.dataset.theme = dark ? "dark" : "light";
+  setPref("theme-last", root.dataset.theme);
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.content = dark ? "#1A1A1C" : "#F7F4EE"; });
+  const fresh = look.wx && t - look.wx.at < 3 * WX_MS;
+  const kind = fresh ? skyKind(look.wx.code) : null;
+  if (pref("colours", "on") === "on") {
+    const mood = moodAt(t, sun);
+    root.dataset.mood = mood;
+    root.style.setProperty("--mood", kind && SKIES[kind] ? "color-mix(in srgb, " + MOODS[mood] + " 45%, " + SKIES[kind] + ")" : MOODS[mood]);
+  } else {
+    delete root.dataset.mood;
+    root.style.removeProperty("--mood");
+  }
+  look.kind = kind; look.sun = sun;
+}
+
+async function refreshWeather(force) {
+  const place = savedPlace();
+  if (!place || !wantsSky() || look.fetching) return;
+  if (!force && look.wx && Date.now() - look.wx.at < WX_MS) return;
+  look.fetching = true;
+  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 10000);
+  try {
+    const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=" + place.lat + "&longitude=" + place.lon +
+      "&current=weather_code&daily=sunrise,sunset&timeformat=unixtime&timezone=auto&forecast_days=1", { signal: ctrl.signal });
+    if (!res.ok) throw new Error("weather " + res.status);
+    const d = await res.json();
+    const rise = Number(d.daily && d.daily.sunrise && d.daily.sunrise[0]) * 1000, set = Number(d.daily && d.daily.sunset && d.daily.sunset[0]) * 1000;
+    const code = d.current ? Number(d.current.weather_code) : NaN;
+    if (!isFinite(rise) || !isFinite(set) || !isFinite(code)) throw new Error("weather: unexpected reply");
+    look.wx = { at: Date.now(), code, sunrise: rise, sunset: set };
+    look.failed = false;
+    setPref("wx", JSON.stringify(look.wx));
+  } catch (e) {
+    console.warn("Couldn't load the weather:", e);
+    look.failed = true;   // colours carry on from the clock
+  } finally {
+    clearTimeout(timer);
+    look.fetching = false;
+    applyLook();
+    if (!$("view-settings").hidden) renderSettings();
+  }
+}
+
+function askLocation() {
+  if (!navigator.geolocation) { toast("This device can't share its location."); return; }
+  const btn = $("set-loc");
+  btn.disabled = true; btn.textContent = "Finding…";
+  navigator.geolocation.getCurrentPosition((pos) => {
+    // one decimal place is about 10 km: enough for weather, not an address
+    setPref("loc", JSON.stringify({ lat: Math.round(pos.coords.latitude * 10) / 10, lon: Math.round(pos.coords.longitude * 10) / 10 }));
+    renderSettings();
+    refreshWeather(true);
+  }, () => {
+    renderSettings();
+    toast("Couldn't get your location. Colours will follow the clock.");
+  }, { timeout: 15000, maximumAge: 3600000 });
+}
+
+function renderSettings() {
+  $("set-theme").value = pref("theme", "auto");
+  $("set-night").value = pref("night", "system");
+  $("set-colours").value = pref("colours", "on");
+  $("set-night-row").hidden = pref("theme", "auto") !== "auto";
+  const place = savedPlace(), btn = $("set-loc");
+  btn.disabled = false;
+  btn.textContent = place ? "Update location" : "Use my location";
+  $("set-loc-note").textContent = place ? "Set (rounded to the nearest town)" : "Not set. Colours and sunset follow the clock only.";
+  const sun = look.sun || sunTimes(new Date());
+  const bits = [];
+  if (sun.real) bits.push("Sunrise " + fmtTime(sun.rise) + " · sunset " + fmtTime(sun.set));
+  else if (wantsSky()) bits.push("Using 6:30 AM and 6 PM for sunrise and sunset until a location is set");
+  if (look.kind) bits.push("Now: " + SKY_NAMES[look.kind]);
+  if (place && look.failed) bits.push("Couldn't reach the weather service; it will try again");
+  $("set-now").textContent = bits.join(" · ");
+}
+
+function wireSettings() {
+  try { look.wx = JSON.parse(pref("wx", "null")); } catch (e) { look.wx = null; }
+  const change = (id, key) => $(id).addEventListener("change", (e) => {
+    setPref(key, e.target.value);
+    applyLook(); renderSettings();
+    if (wantsSky()) refreshWeather(false);
+  });
+  change("set-theme", "theme"); change("set-night", "night"); change("set-colours", "colours");
+  $("set-loc").addEventListener("click", askLocation);
+  try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyLook); } catch (e) {}
+  applyLook();
+  refreshWeather(false);
+}
+
 // ================================================================ START
 window.addEventListener("hashchange", showTab);
 showTab();
@@ -2803,12 +2957,13 @@ renderHeader();
 renderTasks();
 scrollToNow(renderTimeline());
 renderCalendar();
-setInterval(() => { renderHeader(); renderCalendar(); checkStale(); checkWeekRollover(); }, 60 * 1000);
+setInterval(() => { renderHeader(); renderCalendar(); checkStale(); checkWeekRollover(); applyLook(); refreshWeather(false); }, 60 * 1000);
 wireSignIn();
 wireCalendar();
 wireCalendarTab();
 wireTimer();
 wireGrowth();
+wireSettings();
 startData();
 
 if ("serviceWorker" in navigator) {
