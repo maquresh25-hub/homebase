@@ -157,7 +157,7 @@
             <p class="empty">Log every question you get wrong. Redo it in 2 days, then in a week. Get it right both times and it's cleared.</p>
             <form id="miss-form" class="miss-form" novalidate>
               <label for="miss-course" class="sr-only">Course</label>
-              <input id="miss-course" type="text" maxlength="40" autocomplete="off" placeholder="Course, e.g. Chem 1130">
+              <input id="miss-course" type="text" list="course-options" maxlength="40" autocomplete="off" placeholder="Course, e.g. Chem 1130">
               <label for="miss-q" class="sr-only">Question</label>
               <input id="miss-q" type="text" maxlength="300" autocomplete="off" placeholder="The question, e.g. Ch 10 #6: what does NaBH4 donate?">
               <label for="miss-fix" class="sr-only">What you got wrong</label>
@@ -191,6 +191,17 @@
             <button type="button" class="nav-btn" id="set-loc">Use my location</button></div>
           <p class="set-foot" id="set-now"></p>
           <p class="set-foot">These settings are saved on this device. Your location is rounded to the nearest town and only used to ask for the weather. Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a>.</p>
+        </div>
+        <div class="card settings">
+          <h2>Subjects</h2>
+          <p class="set-foot set-lead">Your courses and anything else you track. To-dos can be tagged with one and filtered by it.</p>
+          <ul id="course-list" class="course-list"></ul>
+          <form id="course-form" class="course-form" autocomplete="off">
+            <label for="course-new" class="sr-only">New subject</label>
+            <input id="course-new" type="text" maxlength="40" placeholder="Add a subject, e.g. BIO 2000">
+            <button type="submit" class="nav-btn">Add</button>
+          </form>
+          <datalist id="course-options"></datalist>
         </div>
       </section>
     </main>

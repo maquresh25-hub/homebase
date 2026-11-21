@@ -39,6 +39,7 @@ const state = {
   doneList: [],          // the same deadlines with titles, for the "Done deadlines" list
   showDoneDeadlines: false,
   kitLinks: {},          // exam name -> link to its exam kit (synced in settings/kits)
+  courses: [],           // subjects for tagging tasks (synced in settings/courses)
   range: null,        // [startMs, endMs] the main copy covers
 };
 let fb = null;        // loaded Firebase functions + instances
@@ -331,7 +332,9 @@ function playTick() {
 }
 
 // ================================================================ TASKS (data)
-const openTasks = () => state.tasks.filter((t) => !t.done).sort((a, b) => a.createdAt - b.createdAt);
+const PRIORITIES = ["normal", "high", "low"];   // tapping the flag steps through these
+const priRank = (t) => (t.priority === "high" ? 0 : t.priority === "low" ? 2 : 1);
+const openTasks = () => state.tasks.filter((t) => !t.done).sort((a, b) => priRank(a) - priRank(b) || a.createdAt - b.createdAt);
 const doneTasks = () => state.tasks.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
 
 function taskRef(id) {
@@ -373,6 +376,72 @@ function setTaskDue(task, due) {
   save(fb.updateDoc(taskRef(task.id), { due: value, updatedAt: Date.now() }));
 }
 
+function setTaskPriority(task, priority) {
+  save(fb.updateDoc(taskRef(task.id), { priority: PRIORITIES.includes(priority) && priority !== "normal" ? priority : null, updatedAt: Date.now() }));
+}
+function setTaskCourse(task, course) {
+  save(fb.updateDoc(taskRef(task.id), { course: cleanCourse(course) || null, updatedAt: Date.now() }));
+}
+
+// ---- Subjects: one list (users/{uid}/settings/courses) that tasks and the missed-questions form pick from
+const MAX_COURSES = 30;
+function cleanCourse(raw) { return String(raw || "").replace(/\s+/g, " ").trim().slice(0, 40); }
+function coursesRef() { return fb.doc(fb.db, "users", state.user.uid, "settings", "courses"); }
+function saveCourses(list) {
+  state.courses = list;
+  renderCourses();
+  if (!isEditingTask()) renderTodoPage();
+  save(fb.setDoc(coursesRef(), { list, updatedAt: Date.now() }));
+}
+async function loadCourses() {
+  state.courses = [];
+  try {
+    const snap = await fb.getDoc(coursesRef());
+    const list = snap.exists() ? snap.data().list : null;
+    if (Array.isArray(list)) state.courses = [...new Set(list.map(cleanCourse).filter(Boolean))].slice(0, MAX_COURSES);
+  } catch (e) { console.warn("Couldn't read your subjects:", e); }
+  renderCourses();
+  if (!isEditingTask()) renderTodoPage();
+}
+function addCourse(raw) {
+  const name = cleanCourse(raw);
+  if (!name) return false;
+  if (state.courses.some((c) => c.toLowerCase() === name.toLowerCase())) { toast("That subject is already on the list."); return false; }
+  if (state.courses.length >= MAX_COURSES) { toast("That's the limit of " + MAX_COURSES + " subjects."); return false; }
+  saveCourses([...state.courses, name]);
+  return true;
+}
+function renderCourses() {
+  const host = $("course-list"), options = $("course-options");
+  if (!host) return;
+  host.textContent = ""; options.textContent = "";
+  if (!state.courses.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "No subjects yet.";
+    host.appendChild(li);
+  }
+  state.courses.forEach((c) => {
+    const li = document.createElement("li");
+    const name = document.createElement("span");
+    name.textContent = c;
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "del"; del.textContent = "×";
+    del.setAttribute("aria-label", "Remove subject: " + c);
+    del.addEventListener("click", () => {
+      const before = state.courses;
+      saveCourses(before.filter((x) => x !== c));
+      toast("Subject removed", "Undo", () => saveCourses(before));
+    });
+    li.append(name, del);
+    host.appendChild(li);
+    const o = document.createElement("option");
+    o.value = c;
+    options.appendChild(o);
+  });
+}
+function todoFilter() { try { return localStorage.getItem("hb-todo-course") || ""; } catch (e) { return ""; } }
+
 // "2026-11-17" -> "Today", "Tomorrow", "Tue, Nov 17"
 function dueLabel(due) {
   const [y, m, d] = due.split("-").map(Number);
@@ -405,9 +474,11 @@ function splitTitle(title) {
   return m && m[1] ? [m[1], m[2]] : [title, ""];
 }
 
-function taskItem(task) {
+// full = the To-Do tab, where there's room for the priority flag and the subject picker
+function taskItem(task, full) {
   const li = document.createElement("li");
-  li.className = "task" + (task.done ? " is-done" : "");
+  const pri = task.priority === "high" || task.priority === "low" ? task.priority : "normal";
+  li.className = "task" + (task.done ? " is-done" : "") + (pri !== "normal" && !task.done ? " pri-" + pri : "");
 
   const check = document.createElement("button");
   check.type = "button";
@@ -470,7 +541,38 @@ function taskItem(task) {
   del.textContent = "×";
   del.addEventListener("click", () => deleteTask(task));
 
-  li.append(check, text, dueWrap, del);
+  li.append(check, text);
+  if (full) {
+    const sel = document.createElement("select");
+    sel.className = "course-pick" + (task.course ? " has-course" : "");
+    sel.setAttribute("aria-label", "Subject: " + task.title);
+    const names = task.course && !state.courses.includes(task.course) ? [task.course, ...state.courses] : state.courses;
+    [["", task.course ? "No subject" : "Subject"], ...names.map((c) => [c, c]), ["__edit", "Edit subjects…"]].forEach(([value, label]) => {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = label;
+      sel.appendChild(o);
+    });
+    sel.value = task.course || "";
+    sel.addEventListener("change", () => {
+      if (sel.value === "__edit") { sel.value = task.course || ""; location.hash = "#settings"; return; }
+      setTaskCourse(task, sel.value);
+    });
+    const flag = document.createElement("button");
+    flag.type = "button";
+    flag.className = "pri";
+    flag.textContent = pri === "low" ? "↓" : "!";
+    const next = PRIORITIES[(PRIORITIES.indexOf(pri) + 1) % PRIORITIES.length];
+    flag.setAttribute("aria-label", "Priority " + pri + ". Change to " + next + ": " + task.title);
+    flag.title = "Priority: " + pri;
+    flag.addEventListener("click", () => setTaskPriority(task, next));
+    li.append(sel, flag);
+  } else if (task.course) {
+    const tag = document.createElement("span");
+    tag.className = "task-course";
+    tag.textContent = task.course;
+    li.appendChild(tag);
+  }
+  li.append(dueWrap, del);
   return li;
 }
 
@@ -579,8 +681,25 @@ function renderTodoPage() {
   if (state.status === "loading") return skeleton(host);
   if (state.status === "error") return errorBox(host, "Couldn't load your tasks.");
   host.textContent = "";
-  const open = openTasks();
+  const all = openTasks();
   const done = doneTasks();
+  // Filter by subject, offered once any open task has one
+  const used = [...new Set(all.map((t) => t.course).filter(Boolean))].sort();
+  const filter = used.includes(todoFilter()) ? todoFilter() : "";
+  const open = filter ? all.filter((t) => t.course === filter) : all;
+  if (used.length) {
+    const pick = document.createElement("select");
+    pick.className = "todo-filter";
+    pick.setAttribute("aria-label", "Show tasks for");
+    [["", "All subjects"], ...used.map((c) => [c, c])].forEach(([value, label]) => {
+      const o = document.createElement("option");
+      o.value = value; o.textContent = label;
+      pick.appendChild(o);
+    });
+    pick.value = filter;
+    pick.addEventListener("change", () => { try { localStorage.setItem("hb-todo-course", pick.value); } catch (e) {} renderTodoPage(); });
+    host.appendChild(pick);
+  }
 
   if (open.length === 0) {
     const p = document.createElement("p");
@@ -590,7 +709,7 @@ function renderTodoPage() {
   } else {
     const ul = document.createElement("ul");
     ul.className = "tasks";
-    open.forEach((t) => ul.appendChild(taskItem(t)));
+    open.forEach((t) => ul.appendChild(taskItem(t, true)));
     host.appendChild(ul);
   }
   host.appendChild(addForm("Add a task"));
@@ -905,9 +1024,10 @@ async function startData() {
     stopDone();
     stopSessions();
     stopGrowth();
-    if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); }
+    if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); loadCourses(); }
     else {
       state.kitLinks = {};
+      state.courses = []; renderCourses();
       renderTasks();
       state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
     }
@@ -2945,6 +3065,11 @@ function wireSettings() {
   });
   change("set-theme", "theme"); change("set-night", "night"); change("set-colours", "colours");
   $("set-loc").addEventListener("click", askLocation);
+  $("course-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!fb || !state.user) return;
+    if (addCourse($("course-new").value)) $("course-new").value = "";
+  });
   try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyLook); } catch (e) {}
   applyLook();
   refreshWeather(false);
