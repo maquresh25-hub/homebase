@@ -1,10 +1,12 @@
 // Homebase service worker: lets the app open instantly and work offline.
 // Change VERSION whenever app files change so phones pick up the update.
-const VERSION = "homebase-v25";
+const VERSION = "homebase-v26";
 const FILES = [
   "./", "index.html", "app.css", "app.js", "theme.js", "vault.js", "art.js", "skylines.js", "manifest.webmanifest",
   "fonts/cormorant-garamond-latin-wght-normal.woff2", "fonts/cormorant-garamond-latin-wght-italic.woff2", "fonts/jost-latin-wght-normal.woff2",
   "icon-192.png", "icon-512.png", "apple-touch-icon.png",
+  // app modules (app.js is the entry; it imports these)
+  "js/auth.js", "js/calendar-tab.js", "js/calendar.js", "js/courses.js", "js/draw.js", "js/firebase.js", "js/growth.js", "js/journal.js", "js/kits.js", "js/location.js", "js/look.js", "js/nav.js", "js/screentime.js", "js/settings.js", "js/sound.js", "js/state.js", "js/study.js", "js/sync.js", "js/tasks.js", "js/timer.js", "js/toast.js", "js/today.js", "js/todo.js", "js/util.js",
 ];
 
 self.addEventListener("install", (e) => {
