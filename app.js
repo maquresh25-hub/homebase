@@ -87,8 +87,9 @@ function renderSummary() {
   let taskText = "\u00a0";
   if (state.status === "ready") {
     const open = openTasks().length;
-    if (open > 0) taskText = open + (open === 1 ? " task" : " tasks");
-    else taskText = state.tasks.length ? "Nothing left to do" : "No tasks yet";
+    const today = doneToday();
+    if (open > 0) taskText = open + " open" + (today ? " · " + today + " done today" : "");
+    else taskText = state.tasks.length ? "Nothing left to do" + (today ? " · " + today + " done today" : "") : "No tasks yet";
   }
   $("todo-summary").textContent = taskText;
 
@@ -518,6 +519,10 @@ function lastList() {
 }
 const byPriority = (a, b) => priRank(a) - priRank(b) || a.createdAt - b.createdAt;
 const openTasks = () => state.tasks.filter((t) => !t.done && listOf(t) !== IDEAS).sort(byPriority);
+function doneToday() {
+  const start = new Date(); start.setHours(0, 0, 0, 0);
+  return state.tasks.filter((t) => t.done && t.doneAt >= start.getTime()).length;
+}
 const openIdeas = () => state.tasks.filter((t) => !t.done && listOf(t) === IDEAS).sort(byPriority);
 const doneTasks = () => state.tasks.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
 
@@ -844,6 +849,7 @@ function taskItem(task, full) {
   if (full) {
     const sel = document.createElement("select");
     sel.className = "course-pick" + (task.course ? " has-course" : "");
+    if (task.course) sel.style.setProperty("--c", courseColour(task.course));
     sel.setAttribute("aria-label", "Subject: " + task.title);
     const names = task.course && !state.courses.includes(task.course) ? [task.course, ...state.courses] : state.courses;
     [["", task.course ? "No subject" : "Subject"], ...names.map((c) => [c, c]), ["__edit", "Edit subjects…"]].forEach(([value, label]) => {
@@ -989,10 +995,8 @@ function renderTodoPage() {
   const all = state.tasks.filter((t) => !t.done && (view ? listOf(t) === view : true)).sort(byPriority);
   const done = doneTasks();
   // Lists are the main switch
-  const seg = document.createElement("div");
-  seg.className = "seg";
-  seg.setAttribute("role", "group");
-  seg.setAttribute("aria-label", "Lists");
+  const seg = $("todo-lists");
+  seg.textContent = "";
   [["", "All"], ...state.lists.map((l) => [l.id, l.name])].forEach(([id, name]) => {
     const b = document.createElement("button");
     b.type = "button"; b.textContent = name;
@@ -1000,7 +1004,10 @@ function renderTodoPage() {
     b.addEventListener("click", () => { setPref("todo-list", id); renderTodoPage(); });
     seg.appendChild(b);
   });
-  host.appendChild(seg);
+  const more = document.createElement("a");
+  more.href = "#settings"; more.textContent = "+ New list";
+  more.addEventListener("click", () => setTimeout(() => $("list-new").focus(), 60));
+  seg.appendChild(more);
   // Filter by subject, offered once any open task has one
   const used = [...new Set(all.map((t) => t.course).filter(Boolean))].sort();
   const filter = used.includes(todoFilter()) ? todoFilter() : "";
@@ -1032,7 +1039,7 @@ function renderTodoPage() {
       if (!items.length) return;
       if (!view) {
         const h = document.createElement("h3");
-        h.className = "list-head";
+        h.className = "todo-section";
         h.textContent = l.name + " · " + items.length;
         host.appendChild(h);
       }
@@ -1043,7 +1050,7 @@ function renderTodoPage() {
     });
   }
   const target = view || lastList();
-  host.appendChild(addForm(view ? "Add to " + state.lists.find((l) => l.id === view).name : "Add a task", target));
+  host.appendChild(addForm("Add a task to " + state.lists.find((l) => l.id === target).name, target));
   host = side;
 
   // Quizzes and assignments from your calendar (Canvas). Ticking one here clears it there too.
@@ -1063,7 +1070,12 @@ function renderTodoPage() {
     toggle.type = "button";
     toggle.className = "completed-toggle";
     toggle.setAttribute("aria-expanded", String(state.showCompleted));
-    toggle.textContent = (state.showCompleted ? "▾ " : "▸ ") + "Completed " + done.length;
+    toggle.classList.add("done-block");
+    const big = document.createElement("b"), words = document.createElement("span"), small = document.createElement("small");
+    big.textContent = doneToday();
+    small.textContent = "Done today";
+    words.append(small, (state.showCompleted ? "Hide finished tasks" : "Show finished tasks") + " · " + done.length);
+    toggle.append(big, words);
     toggle.addEventListener("click", () => { state.showCompleted = !state.showCompleted; renderTodoPage(); });
     host.appendChild(toggle);
     if (state.showCompleted) {
