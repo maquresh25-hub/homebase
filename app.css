@@ -965,8 +965,8 @@ button.now-title:focus-visible { outline: 2px solid var(--hero-accent); outline-
   .app { flex-direction: column; }
   .tabs {
     position: sticky; top: 0; z-index: 30; width: auto; height: auto; min-height: 72px;
-    flex-direction: row; align-items: center; gap: 30px; padding: 0 64px; border-right: 0;
-    background: var(--deep); color: var(--hero-text);
+    display: grid; grid-template-columns: 1fr repeat(3, 118px) 300px repeat(3, 118px) 1fr; align-items: center; gap: 0; padding: 0 24px; border-right: 0;
+    background: var(--deep); color: var(--hero-text);   /* links sit in equal cells either side of the wordmark, so they stay close to it and it stays centred */
   }
   .tabs::after { content: ""; position: absolute; left: 0; right: 0; top: 100%; height: 1px; background: var(--hero-line); pointer-events: none; }
   .brand {
@@ -986,8 +986,14 @@ button.now-title:focus-visible { outline: 2px solid var(--hero-accent); outline-
   .tabs a:hover { background: none; color: var(--hero-text); }
   .tabs a.active { color: var(--hero-text); background: none; box-shadow: inset 0 -2px 0 var(--hero-accent); }
   .tabs a:focus-visible { outline: 2px solid var(--hero-accent); outline-offset: 4px; }
-  .tabs a[data-tab="study"] { margin-left: auto; }
-  .tabs a[data-tab="settings"] { margin-top: 0; }
+  .tabs a { justify-self: center; }
+  .tabs a[data-tab="today"] { grid-column: 2; }
+  .tabs a[data-tab="calendar"] { grid-column: 3; }
+  .tabs a[data-tab="todo"] { grid-column: 4; }
+  .tabs a[data-tab="study"] { grid-column: 6; }
+  .tabs a[data-tab="materials"] { grid-column: 7; }
+  .tabs a[data-tab="settings"] { grid-column: 8; margin-top: 0; }
+  .tabs a, .brand { grid-row: 1; }
   main { width: 100%; max-width: 1200px; margin: 0 auto; padding: 48px 64px 64px; box-sizing: border-box; }
   main:has(> #view-today:not([hidden])) { max-width: none; padding: 0; }
   main:has(> #view-calendar:not([hidden])) { max-width: none; }
@@ -995,7 +1001,7 @@ button.now-title:focus-visible { outline: 2px solid var(--hero-accent); outline-
 }
 @media (min-width: 821px) and (max-width: 1080px) {
   .brand { font-size: 0; gap: 0; }
-  .tabs { gap: 22px; padding: 0 32px; }
+  .tabs { grid-template-columns: 1fr repeat(3, 104px) 84px repeat(3, 104px) 1fr; padding: 0 12px; }
   .hero { padding-left: 32px; padding-right: 32px; }
   .today-grid { grid-template-columns: 1fr; padding-left: 32px; padding-right: 32px; }
 }
