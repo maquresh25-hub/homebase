@@ -1,5 +1,5 @@
 import { daysLeft, nextExam } from "./calendar.js";
-import { cleanCourse, courseColour } from "./courses.js";
+import { cleanCourse } from "./courses.js";
 import { fb } from "./firebase.js";
 import { state } from "./state.js";
 import { save } from "./tasks.js";
@@ -39,10 +39,16 @@ function renderExamCard() {
   const row = document.createElement("div");
   row.className = "kit-row";
   if (link && !examKitEditing) {
-    const open = document.createElement("a");
+    const video = videoEmbed(link);
+    const open = document.createElement(video ? "button" : "a");
     open.className = "btn-primary kit-open";
-    open.href = link; open.target = "_blank"; open.rel = "noopener";
-    open.textContent = "Open exam kit";
+    open.textContent = video ? "Play video" : "Open exam kit";
+    if (video) {
+      open.type = "button";
+      open.addEventListener("click", () => openPlayer(exam.title, link, open));
+    } else {
+      open.href = link; open.target = "_blank"; open.rel = "noopener";
+    }
     const change = document.createElement("button");
     change.type = "button"; change.className = "btn-link"; change.textContent = "Change link";
     change.addEventListener("click", () => { examKitEditing = true; renderExamCard(); });
@@ -91,10 +97,56 @@ function saveKitLink(key, url) {
   renderExamCard();
   save(fb.setDoc(kitsRef(), { links, items: state.kits, updatedAt: Date.now() }));
 }
-// Exam kits listed in the Study tab: { id, title, url, course }
+// YouTube (privacy-enhanced) or Vimeo. Anything else cannot be embedded.
+function videoEmbed(raw) {
+  let u;
+  try { u = new URL(String(raw || "").trim()); } catch (e) { return null; }
+  if (u.protocol !== "https:" && u.protocol !== "http:") return null;
+  const host = u.hostname.replace(/^www\./, "").toLowerCase();
+  let youtubeId = "";
+  if (host === "youtu.be") youtubeId = u.pathname.split("/").filter(Boolean)[0] || "";
+  else if (host === "youtube.com" || host === "m.youtube.com" || host === "music.youtube.com" || host === "youtube-nocookie.com") {
+    if (u.pathname === "/watch") youtubeId = u.searchParams.get("v") || "";
+    else {
+      const parts = u.pathname.split("/").filter(Boolean);
+      const slot = parts[0] === "embed" || parts[0] === "shorts" || parts[0] === "live" ? parts[1] : "";
+      youtubeId = slot || "";
+    }
+  }
+  if (/^[\w-]{6,}$/.test(youtubeId)) {
+    return {
+      kind: "youtube", id: youtubeId,
+      embed: "https://www.youtube-nocookie.com/embed/" + encodeURIComponent(youtubeId) + "?rel=0",
+      external: "https://www.youtube.com/watch?v=" + encodeURIComponent(youtubeId),
+      externalLabel: "Open on YouTube",
+    };
+  }
+  let vimeoId = "";
+  if (host === "vimeo.com" || host === "player.vimeo.com") {
+    vimeoId = u.pathname.split("/").filter(Boolean).reverse().find((p) => /^\d{6,}$/.test(p)) || "";
+  }
+  if (vimeoId) {
+    return {
+      kind: "vimeo", id: vimeoId,
+      embed: "https://player.vimeo.com/video/" + vimeoId,
+      external: "https://vimeo.com/" + vimeoId,
+      externalLabel: "Open on Vimeo",
+    };
+  }
+  return null;
+}
+function cleanVideo(v) {
+  if (typeof v === "string") v = { url: v };
+  const url = String((v && v.url) || "").trim().slice(0, 500);
+  if (!videoEmbed(url)) return null;
+  const title = cleanCourse(v && v.title).slice(0, 80) || "Video";
+  return { id: String((v && v.id) || "v" + Math.random().toString(36).slice(2, 9)), title, url };
+}
+// Exam kits listed in the Study tab: { id, title, url, course, videos }
 const cleanKit = (k) => {
   const title = cleanCourse(k && k.title).slice(0, 80), url = String((k && k.url) || "").trim().slice(0, 500);
-  return title && /^https:\/\/\S+$/i.test(url) ? { id: String((k && k.id) || "k" + Math.random().toString(36).slice(2, 9)), title, url, course: cleanCourse(k && k.course) } : null;
+  const videos = Array.isArray(k && k.videos) ? k.videos.map(cleanVideo).filter(Boolean).slice(0, 12) : [];
+  return title && /^https:\/\/\S+$/i.test(url) ? { id: String((k && k.id) || "k" + Math.random().toString(36).slice(2, 9)), title, url, course: cleanCourse(k && k.course), videos } : null;
 };
 function saveKits(items) {
   if (!state.kitsLoaded) { toast("Your kits haven't loaded yet. Check your connection and try again."); return; }
@@ -137,18 +189,7 @@ function renderKits() {
     h.textContent = g || "Other";
     const ul = document.createElement("ul");
     ul.className = "kit-rows";
-    state.kits.filter((k) => (k.course || "") === g).forEach((k) => {
-      const li = document.createElement("li");
-      const a = document.createElement("a");
-      a.href = k.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = k.title;
-      if (g) a.style.setProperty("--c", courseColour(g));
-      const del = document.createElement("button");
-      del.type = "button"; del.className = "del"; del.textContent = "×";
-      del.setAttribute("aria-label", "Remove kit: " + k.title);
-      del.addEventListener("click", () => { const before = state.kits; saveKits(before.filter((x) => x.id !== k.id)); toast("Kit removed", "Undo", () => saveKits(before)); });
-      li.append(a, del);
-      ul.appendChild(li);
-    });
+    state.kits.filter((k) => (k.course || "") === g).forEach((k) => ul.appendChild(kitRow(k, g)));
     host.append(h, ul);
   });
 }
@@ -169,4 +210,157 @@ async function loadKitLinks() {
 }
 
 
-export { cleanKit, loadKitLinks, renderExamCard, renderKits, saveKits };
+function kitRow(k, course) {
+  const li = document.createElement("li");
+  const main = document.createElement("div");
+  main.className = "kit-main";
+  if (course) {
+    const label = document.createElement("p");
+    label.className = "kit-course";
+    label.textContent = course;
+    main.appendChild(label);
+  }
+  const own = videoEmbed(k.url);
+  const title = document.createElement(own ? "button" : "a");
+  title.className = "kit-title-link";
+  title.textContent = k.title;
+  if (own) {
+    title.type = "button";
+    title.addEventListener("click", () => openPlayer(k.title, k.url, title));
+  } else {
+    title.href = k.url; title.target = "_blank"; title.rel = "noopener";
+  }
+  main.appendChild(title);
+  main.appendChild(videoSection(k));
+  const del = document.createElement("button");
+  del.type = "button"; del.className = "nav-btn kit-remove"; del.textContent = "Remove";
+  del.setAttribute("aria-label", "Remove kit: " + k.title);
+  del.addEventListener("click", () => { const before = state.kits; saveKits(before.filter((x) => x.id !== k.id)); toast("Kit removed", "Undo", () => saveKits(before)); });
+  li.append(main, del);
+  return li;
+}
+function videoSection(k) {
+  const box = document.createElement("div");
+  box.className = "kit-videos";
+  const label = document.createElement("p");
+  label.className = "kit-course";
+  label.textContent = "Videos";
+  box.appendChild(label);
+  const videos = k.videos || [];
+  if (!videos.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty";
+    empty.textContent = "No videos yet.";
+    box.appendChild(empty);
+  } else {
+    const ul = document.createElement("ul");
+    ul.className = "kit-video-list";
+    videos.forEach((v) => {
+      const li = document.createElement("li");
+      const btn = document.createElement("button");
+      btn.type = "button"; btn.className = "kit-video-btn"; btn.textContent = v.title;
+      btn.addEventListener("click", () => openPlayer(v.title, v.url, btn));
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "btn-link"; del.textContent = "Remove video";
+      del.addEventListener("click", () => {
+        const before = state.kits;
+        saveKits(before.map((x) => x.id === k.id ? { ...x, videos: (x.videos || []).filter((y) => y.id !== v.id) } : x));
+        toast("Video removed", "Undo", () => saveKits(before));
+      });
+      li.append(btn, del);
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+  }
+  const form = document.createElement("form");
+  form.className = "kit-video-add";
+  form.noValidate = true;
+  const titleLabel = document.createElement("label");
+  titleLabel.className = "kit-label";
+  titleLabel.textContent = "Video title";
+  const title = document.createElement("input");
+  title.type = "text"; title.maxLength = 80; title.autocomplete = "off"; title.placeholder = "e.g. Chapter 4 review";
+  titleLabel.htmlFor = title.id = "vid-title-" + k.id;
+  const urlLabel = document.createElement("label");
+  urlLabel.className = "kit-label";
+  urlLabel.textContent = "YouTube or Vimeo link";
+  const url = document.createElement("input");
+  url.type = "url"; url.maxLength = 500; url.placeholder = "https://";
+  url.autocapitalize = "off"; url.spellcheck = false;
+  urlLabel.htmlFor = url.id = "vid-url-" + k.id;
+  const err = document.createElement("p");
+  err.className = "form-error"; err.setAttribute("role", "alert");
+  const add = document.createElement("button");
+  add.type = "submit"; add.className = "btn-primary"; add.textContent = "Add video";
+  form.append(titleLabel, title, urlLabel, url, err, add);
+  form.addEventListener("submit", (e) => {
+    e.preventDefault();
+    err.textContent = "";
+    const video = cleanVideo({ title: title.value, url: url.value });
+    if (!video) { err.textContent = "Use a YouTube or Vimeo link, and give it a title. Other links can't play inside Homebase."; return; }
+    if (!state.user || !state.kitsLoaded) { toast("Sign in to save videos with your kits."); return; }
+    saveKits(state.kits.map((x) => x.id === k.id ? { ...x, videos: [...(x.videos || []), video].slice(0, 12) } : x));
+  });
+  box.appendChild(form);
+  return box;
+}
+let playerOpener = null;
+let playerWired = false;
+function wirePlayer() {
+  if (playerWired || !$("video-sheet")) return;
+  playerWired = true;
+  const sheet = $("video-sheet");
+  $("video-close").addEventListener("click", closePlayer);
+  sheet.addEventListener("click", (e) => { if (e.target === sheet) closePlayer(); });
+  document.addEventListener("keydown", (e) => {
+    if (sheet.hidden) return;
+    if (e.key === "Escape") { e.preventDefault(); closePlayer(); return; }
+    if (e.key !== "Tab") return;
+    const nodes = [...sheet.querySelectorAll("button, a[href]")].filter((el) => !el.hidden);
+    if (!nodes.length) return;
+    const first = nodes[0], last = nodes[nodes.length - 1];
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+  });
+}
+function openPlayer(title, url, opener) {
+  wirePlayer();
+  const sheet = $("video-sheet"), frame = $("video-frame"), err = $("video-error"), ext = $("video-external");
+  if (!sheet) return;
+  playerOpener = opener || null;
+  $("video-title").textContent = title || "Video";
+  frame.textContent = "";
+  frame.hidden = true;
+  err.hidden = true;
+  err.textContent = "";
+  const parsed = videoEmbed(url);
+  if (parsed) {
+    const iframe = document.createElement("iframe");
+    iframe.src = parsed.embed;
+    iframe.title = title || "Video";
+    iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; fullscreen";
+    iframe.allowFullscreen = true;
+    iframe.referrerPolicy = "strict-origin-when-cross-origin";
+    frame.appendChild(iframe);
+    frame.hidden = false;
+    ext.hidden = false;
+    ext.href = parsed.external;
+    ext.textContent = parsed.externalLabel;
+  } else {
+    err.hidden = false;
+    err.textContent = "That link can't play inside Homebase. Use a YouTube or Vimeo link.";
+    const raw = String(url || "").trim();
+    if (/^https:\/\/\S+$/i.test(raw)) { ext.hidden = false; ext.href = raw; ext.textContent = "Open the link"; }
+    else { ext.hidden = true; ext.removeAttribute("href"); ext.textContent = ""; }
+  }
+  sheet.hidden = false;
+  $("video-close").focus();
+}
+function closePlayer() {
+  const sheet = $("video-sheet"), frame = $("video-frame");
+  if (sheet) sheet.hidden = true;
+  if (frame) { frame.textContent = ""; frame.hidden = true; }
+  if (playerOpener && playerOpener.focus) playerOpener.focus();
+  playerOpener = null;
+}
+export { cleanKit, loadKitLinks, openPlayer, renderExamCard, renderKits, saveKits, videoEmbed };

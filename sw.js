@@ -1,6 +1,6 @@
 // Homebase service worker: lets the app open instantly and work offline.
 // Change VERSION whenever app files change so phones pick up the update.
-const VERSION = "homebase-v31";
+const VERSION = "homebase-v32";
 const FILES = [
   "./", "index.html", "app.css", "features.css", "app.js", "theme.js", "vault.js", "art.js", "skylines.js", "manifest.webmanifest",
   "fonts/cormorant-garamond-latin-wght-normal.woff2", "fonts/cormorant-garamond-latin-wght-italic.woff2", "fonts/jost-latin-wght-normal.woff2",
@@ -27,6 +27,8 @@ let slowUntil = 0;
 self.addEventListener("fetch", (e) => {
   if (e.request.method !== "GET") return;
   const url = new URL(e.request.url);
+  // Video players stay on YouTube and Vimeo. Never cache them.
+  if (url.hostname === "www.youtube-nocookie.com" || url.hostname === "www.youtube.com" || url.hostname === "player.vimeo.com" || url.hostname === "vimeo.com") return;
   // Firebase code files never change for a given version: cache-first, so the app opens offline.
   if (url.origin === "https://www.gstatic.com" && url.pathname.startsWith("/firebasejs/")) {
     e.respondWith(

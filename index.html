@@ -207,11 +207,11 @@
             <h2>Exam kits</h2>
             <div id="kit-list"></div>
             <form id="kit-form" class="kit-add" novalidate>
-              <label for="kit-title" class="sr-only">Kit name</label>
+              <label class="kit-label" for="kit-title">Kit name</label>
               <input id="kit-title" type="text" maxlength="80" autocomplete="off" placeholder="Name, e.g. BIO 2000 · Exam 2 Kit">
-              <label for="kit-url" class="sr-only">Link</label>
+              <label class="kit-label" for="kit-url">Link</label>
               <input id="kit-url" type="url" maxlength="500" autocomplete="off" placeholder="Link (https://…)">
-              <label for="kit-course" class="sr-only">Subject</label>
+              <label class="kit-label" for="kit-course">Subject</label>
               <select id="kit-course"></select>
               <button type="submit" class="btn-primary">Add</button>
             </form>
@@ -397,6 +397,19 @@
         <a id="invite-sms" class="nav-btn" href="sms:">Text</a>
       </div>
       <p class="muted-line flush invite-foot">Nothing is sent until you send it yourself.</p>
+    </div>
+  </div>
+
+  <!-- In-app video. YouTube uses the privacy-enhanced player. Nothing here is cached. -->
+  <div id="video-sheet" class="sheet-backdrop" hidden>
+    <div class="sheet video-sheet" role="dialog" aria-modal="true" aria-labelledby="video-title">
+      <div class="sheet-top">
+        <h2 id="video-title"></h2>
+        <button type="button" id="video-close" class="sheet-close" aria-label="Close">×</button>
+      </div>
+      <div id="video-frame" class="video-frame" hidden></div>
+      <p id="video-error" class="form-error" role="alert" hidden></p>
+      <p class="disc-links"><a id="video-external" target="_blank" rel="noopener"></a></p>
     </div>
   </div>
 

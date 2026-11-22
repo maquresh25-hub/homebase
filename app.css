@@ -1147,18 +1147,46 @@ button.now-title:focus-visible { outline: 2px solid var(--hero-accent); outline-
 .kit-rows a { flex: 1; min-width: 0; display: flex; align-items: center; gap: 12px; padding: 12px 0; min-height: 44px; box-sizing: border-box; color: var(--text); text-decoration: none; }
 .kit-rows a::before { content: ""; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--muted)); }
 .kit-rows a::after { content: "Open ›"; margin-left: auto; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+.kit-rows a.kit-title-link, .kit-rows button.kit-title-link {
+  display: flex; align-items: center; width: 100%; min-height: 44px; padding: 4px 0; flex: none;
+}
+.kit-rows a.kit-title-link::after, .kit-rows a.kit-title-link::before { content: none; }
 .kit-rows a:hover { color: var(--gold); }
 .kit-rows .del { opacity: .55; }
 .kit-import { display: flex; align-items: center; justify-content: space-between; gap: 12px; background: var(--deep); color: var(--hero-text); border-radius: 14px; padding: 12px 16px; margin-bottom: 16px; }
 .kit-import .btn-primary { margin: 0; background: var(--hero-accent); color: var(--on-accent); }
-.kit-add { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; margin-top: 16px; }
-.kit-add .btn-primary { justify-self: end; padding: 10px 22px; }
-.kit-add input, .kit-add select, .journal-lock input, .journal-entry textarea {
+.kit-add { display: grid; grid-template-columns: 1fr; gap: 8px; margin-top: 16px; }
+.kit-label { font: 500 .72rem/1.2 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+.kit-add .btn-primary, .kit-video-add .btn-primary { justify-self: stretch; padding: 10px 22px; min-height: 44px; }
+.kit-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 12px 0; }
+.kit-course { margin: 0; font: 500 .72rem/1.2 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--gold); }
+.kit-title-link, .kit-video-btn {
+  margin: 0; padding: 0; border: 0; background: none; text-align: left; cursor: pointer;
+  font: 500 1.35rem/1.15 var(--serif); color: var(--text); text-decoration: none;
+}
+.kit-title-link:hover, .kit-video-btn:hover { color: var(--gold); }
+.kit-title-link:focus-visible, .kit-video-btn:focus-visible, .kit-remove:focus-visible { outline: 2px solid var(--gold); outline-offset: 3px; }
+.kit-rows li { align-items: flex-start; }
+.kit-remove { margin-top: 14px; min-height: 44px; }
+.kit-videos { margin: 8px 0 0; }
+.kit-videos .kit-course { margin-bottom: 4px; }
+.kit-video-list { list-style: none; margin: 0; padding: 0; }
+.kit-video-list li { display: flex; align-items: center; gap: 12px; border: 0; padding: 0; min-height: 44px; }
+.kit-video-btn { flex: 0 1 auto; min-height: 44px; width: auto; }
+.kit-video-list .btn-link { min-height: 44px; padding: 8px 4px; flex: none; }
+.kit-video-add { display: grid; gap: 8px; margin-top: 8px; }
+.kit-video-add .form-error { margin: 0; min-height: 0; }
+.video-sheet { max-width: 720px; }
+.video-frame { position: relative; margin-top: 12px; aspect-ratio: 16 / 9; border-radius: 12px; overflow: hidden; background: var(--deep); }
+.video-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+#video-error { margin-top: 12px; }
+.kit-add input, .kit-add select, .kit-video-add input, .journal-lock input, .journal-entry textarea {
   font: inherit; color: var(--text); background: color-mix(in srgb, var(--card) 70%, transparent); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; min-height: 42px; min-width: 0; box-sizing: border-box;
 }
-.kit-add input:focus-visible, .kit-add select:focus-visible, .journal-lock input:focus-visible, .journal-entry textarea:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.kit-add input:focus-visible, .kit-add select:focus-visible, .kit-video-add input:focus-visible, .journal-lock input:focus-visible, .journal-entry textarea:focus-visible { outline: 2px solid var(--gold); outline-offset: 1px; }
+.kit-add input, .kit-add select, .kit-video-add input { min-height: 44px; }
 .kit-add .btn-primary { margin: 0; }
-@media (max-width: 820px) { .kit-add { grid-template-columns: 1fr; } .kit-add .btn-primary { justify-self: stretch; } }
+@media (max-width: 820px) { .kit-add { grid-template-columns: 1fr; } }
 
 /* journal */
 .journal-grid { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(0, 1fr); gap: 40px 64px; align-items: start; }
