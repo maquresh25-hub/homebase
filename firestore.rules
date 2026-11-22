@@ -1,0 +1,23 @@
+rules_version = '2';
+
+// Homebase Firestore rules.
+// A signed-in user can read and write only their own tree, users/{uid}/** (including the users/{uid} doc itself).
+// This covers every collection the app already uses (tasks, doneEvents, settings/*, sessions, growth data,
+// journal, screentime, …) plus the new read-only-in-the-app collections discover and campusEvents,
+// which Muhammad's assistant writes with his own signed-in credentials.
+// Everything else is denied.
+//
+// Not deployed by the app or by this change. Muhammad: compare this with the rules live now in the
+// Firebase console (Firestore Database → Rules) first, then publish it there or run
+//   firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+    // Explicit deny for anything else (rules are deny-by-default; this only documents the intent)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
