@@ -5,10 +5,12 @@ import { km } from "../theme.js";
 import { HOME_POINT, freeSlots, isSunday } from "./protected.js";
 import { addDays, pref, setPref, startOfDay } from "./util.js";
 
-const CACHE_KEY = "place-cache-v1";
+const CACHE_KEY = "place-cache-v2";
+const SITE_KEY = "place-sites-v1";
 const MAX_SAVED = 8;
 const GEO_GAP_MS = 1100;
 const WIKI = "https://en.wikipedia.org/w/api.php";
+const WIKIDATA = "https://www.wikidata.org/w/api.php";
 
 let lastGeoAt = 0;
 
@@ -68,8 +70,8 @@ async function geocode(q) {
 function wikiUrl(params) {
   return WIKI + "?" + new URLSearchParams({
     action: "query", format: "json", origin: "*",
-    prop: "pageimages|extracts|coordinates|info",
-    inprop: "url", exintro: "1", explaintext: "1", exchars: "280",
+    prop: "pageimages|extracts|coordinates|info|pageprops",
+    inprop: "url", ppprop: "wikibase_item", exintro: "1", explaintext: "1", exchars: "280",
     pithumbsize: "480", piprop: "thumbnail",
     ...params,
   });
@@ -89,6 +91,56 @@ function safePhoto(url) {
     if (!/(^|\.)wikimedia\.org$|(^|\.)wikipedia\.org$/.test(u.hostname)) return "";
     return u.href;
   } catch (e) { return ""; }
+}
+function safeSite(url) {
+  try {
+    const u = new URL(String(url || "").trim());
+    if (u.protocol !== "https:" && u.protocol !== "http:") return "";
+    return u.href;
+  } catch (e) { return ""; }
+}
+function readSites() {
+  try {
+    const raw = JSON.parse(pref(SITE_KEY, ""));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch (e) { return {}; }
+}
+function writeSites(all) {
+  const entries = Object.entries(all).slice(-300);
+  try { setPref(SITE_KEY, JSON.stringify(Object.fromEntries(entries))); } catch (e) { /* a miss just means Maps */ }
+}
+// P856 is the official website. Preferred rank wins. An empty string means Wikidata has none.
+function siteFromEntity(entity) {
+  const claims = entity && entity.claims && entity.claims.P856 || [];
+  const ranked = claims.filter((c) => c && c.rank !== "deprecated" && c.mainsnak && c.mainsnak.snaktype === "value");
+  ranked.sort((a, b) => (a.rank === "preferred" ? 0 : 1) - (b.rank === "preferred" ? 0 : 1));
+  for (const c of ranked) {
+    const value = c.mainsnak.datavalue && c.mainsnak.datavalue.value;
+    const url = safeSite(typeof value === "string" ? value : "");
+    if (url) return url;
+  }
+  return "";
+}
+async function attachWebsites(ideas) {
+  const ids = [...new Set(ideas.map((i) => i.qid).filter((id) => /^Q\d+$/.test(id)))];
+  const known = readSites();
+  const missing = ids.filter((id) => !Object.prototype.hasOwnProperty.call(known, id));
+  if (missing.length) {
+    try {
+      const res = await fetch(WIKIDATA + "?" + new URLSearchParams({
+        action: "wbgetentities", ids: missing.join("|"), props: "claims", format: "json", origin: "*",
+      }));
+      if (res.ok) {
+        const data = await res.json();
+        const entities = data && data.entities || {};
+        missing.forEach((id) => { known[id] = siteFromEntity(entities[id]); });
+        writeSites(known);
+      }
+    } catch (e) { /* no official site this time; the card opens Maps */ }
+  }
+  ideas.forEach((idea) => {
+    idea.officialUrl = safeSite(known[idea.qid] || "");
+  });
 }
 function safeWiki(url) {
   try {
@@ -150,6 +202,8 @@ function toIdea(page, place) {
     keywords: (title + " " + extract).slice(0, 240),
     photo: safePhoto(page.thumbnail && page.thumbnail.source),
     sourceName: "Wikipedia",
+    qid: page.pageprops && /^Q\d+$/.test(page.pageprops.wikibase_item) ? page.pageprops.wikibase_item : "",
+    officialUrl: "",
   };
 }
 
@@ -190,6 +244,7 @@ export async function lookupPlace(raw) {
   });
   ideas.sort((a, b) => km(place, a) - km(place, b));
   const trimmed = ideas.slice(0, 18);
+  await attachWebsites(trimmed);   // one Wikidata call for every page in this search
   const packed = { place, ideas: trimmed, at: Date.now() };
   const all = readCache();
   all[cacheKey(q)] = packed;

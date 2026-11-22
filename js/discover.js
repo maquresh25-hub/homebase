@@ -418,12 +418,35 @@ function photoBlock(item) {
   });
   return img;
 }
+function openPlace(item) {
+  const href = item.officialUrl || item.mapsUrl || mapsLink(item);
+  const opened = window.open(href, "_blank", "noopener,noreferrer");
+  if (opened) opened.opener = null;
+}
 function card(item, dist, slot, canSave, who, fromCenter) {
-  const c = el("article", "card disc-card");
+  const linked = "photo" in item;
+  const c = el("article", "card disc-card" + (linked ? " is-link" : ""));
+  if (linked) {
+    const site = !!item.officialUrl;
+    c.tabIndex = 0;
+    c.setAttribute("role", "link");
+    c.setAttribute("aria-label", (site ? "Website" : "Maps") + ": " + item.title);
+    c.addEventListener("click", (e) => {
+      if (e.target.closest("a, button, .disc-actions, .disc-tags")) return;
+      openPlace(item);
+    });
+    c.addEventListener("keydown", (e) => {
+      if (e.target !== c || (e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      openPlace(item);
+    });
+  }
   if ("photo" in item) c.appendChild(photoBlock(item));
   const top = el("div", "disc-top");
   top.append(el("span", "disc-cat", CATS[item.category] || "Idea"), el("span", "disc-dist", distText(dist, fromCenter)));
-  c.append(top, el("h3", "disc-title", item.title));
+  c.append(top);
+  if (linked) c.appendChild(el("p", "disc-go", item.officialUrl ? "Website" : "Maps"));
+  c.append(el("h3", "disc-title", item.title));
   const where = [item.place && item.place !== item.title ? item.place : "", item.address].filter(Boolean).join(" · ");
   if (where) c.appendChild(el("p", "disc-place", where));
 
