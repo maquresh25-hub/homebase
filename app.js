@@ -566,8 +566,18 @@ async function loadCourses() {
   renderCourses();
   if (!isEditingTask()) renderTodoPage();
 }
+// One name, or several separated by commas or new lines ("BIO 2000, Chem 1130")
 function addCourse(raw) {
-  const name = cleanCourse(raw);
+  const names = String(raw || "").split(/[,;\n]+/).map(cleanCourse).filter(Boolean);
+  if (names.length > 1) {
+    const have = new Set(state.courses.map((c) => c.toLowerCase())), fresh = [];
+    names.forEach((n) => { if (!have.has(n.toLowerCase()) && state.courses.length + fresh.length < MAX_COURSES) { have.add(n.toLowerCase()); fresh.push(n); } });
+    if (!fresh.length) { toast("Those subjects are already on the list."); return false; }
+    saveCourses([...state.courses, ...fresh]);
+    toast("Added " + fresh.length + " subjects");
+    return true;
+  }
+  const name = names[0];
   if (!name) return false;
   if (state.courses.some((c) => c.toLowerCase() === name.toLowerCase())) { toast("That subject is already on the list."); return false; }
   if (state.courses.length >= MAX_COURSES) { toast("That's the limit of " + MAX_COURSES + " subjects."); return false; }
@@ -3150,6 +3160,16 @@ function wireSettings() {
     if (!fb || !state.user) return;
     if (addCourse($("course-new").value)) $("course-new").value = "";
   });
+  // A link like ...?subjects=BIO%202000,Chem%201130 opens Settings with those names typed in, ready for you to press Add
+  try {
+    const url = new URL(location.href), given = url.searchParams.get("subjects");
+    if (given) {
+      $("course-new").value = given.split(",").map(cleanCourse).filter(Boolean).slice(0, MAX_COURSES).join(", ");
+      url.searchParams.delete("subjects");
+      history.replaceState(null, "", url.pathname + url.search + "#settings");
+      showTab();
+    }
+  } catch (e) {}
   applyLook();
 }
 

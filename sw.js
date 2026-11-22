@@ -1,6 +1,6 @@
 // Homebase service worker: lets the app open instantly and work offline.
 // Change VERSION whenever app files change so phones pick up the update.
-const VERSION = "homebase-v21";
+const VERSION = "homebase-v22";
 const FILES = [
   "./", "index.html", "app.css", "app.js", "theme.js", "manifest.webmanifest",
   "fonts/cormorant-garamond-latin-wght-normal.woff2", "fonts/cormorant-garamond-latin-wght-italic.woff2", "fonts/jost-latin-wght-normal.woff2",
