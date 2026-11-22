@@ -1,0 +1,72 @@
+/* Homebase — features.css: new features, loaded after app.css. Tokens only; light and dark follow theme.js. */
+
+/* ================= 7 tabs: Today, Calendar, To-Do, Discover | Study, Journal, Settings ================= */
+/* Mac top bar: four links left of the wordmark, three right; the wordmark stays centred */
+@media (min-width: 821px) {
+  .tabs { grid-template-columns: 1fr repeat(4, minmax(88px, 112px)) 280px repeat(4, minmax(88px, 112px)) 1fr; }
+  .tabs a[data-tab="discover"] { grid-column: 5; }
+  .tabs a[data-tab="study"] { grid-column: 7; }
+  .tabs a[data-tab="journal"] { grid-column: 8; }
+  .tabs a[data-tab="settings"] { grid-column: 9; }
+}
+@media (min-width: 821px) and (max-width: 1080px) {
+  .tabs { grid-template-columns: 1fr repeat(4, minmax(70px, 96px)) 64px repeat(4, minmax(70px, 96px)) 1fr; }
+  .tabs a { font-size: .7rem; letter-spacing: .12em; }
+}
+
+/* iPhone: tighter items so every tab fits from 320 to 430 px */
+@media (max-width: 820px) {
+  .tabs { padding: 4px; }
+  .tabs a { min-width: 0; padding: 6px 1px; font-size: .64rem; letter-spacing: 0; }
+  .tabs a span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tabs .ico { width: 22px; height: 22px; }
+}
+/* Very narrow: icons only; the label stays for screen readers */
+@media (max-width: 359px) {
+  .tabs a { padding: 10px 0; }
+  .tabs a span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+}
+
+/* ================= Discover ================= */
+.disc-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin-bottom: 22px; }
+.disc-filters button { white-space: nowrap; }
+.disc-filters button[aria-pressed="true"] { background: var(--deep); border-color: var(--deep); color: var(--hero-text); }
+.disc-filters button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+.disc-where { margin: 0; color: var(--muted); font-size: .88rem; }
+.disc-where .btn-link { margin-left: 6px; font-size: .88rem; }
+.disc-where .btn-link:disabled { opacity: .6; cursor: default; }
+.disc-label { margin: 0 0 12px; color: var(--muted); font: 500 .72rem/1.3 var(--sans); letter-spacing: .2em; text-transform: uppercase; }
+.disc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); gap: 20px; align-items: start; }
+
+.disc-card { display: flex; flex-direction: column; gap: 8px; padding: 20px 22px; min-width: 0; }
+.disc-top { display: flex; justify-content: space-between; gap: 10px; color: var(--muted); font: 500 .68rem/1.3 var(--sans); letter-spacing: .18em; text-transform: uppercase; }
+.disc-cat { color: var(--gold); }
+.disc-dist { white-space: nowrap; }
+.disc-title { margin: 0; font: 500 1.6rem/1.1 var(--serif); overflow-wrap: anywhere; }
+.disc-place { margin: 0; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
+.disc-meta { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 4px; font-size: .9rem; }
+.disc-meta b { font-weight: 600; }
+.disc-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.disc-tag {
+  font-size: .75rem; padding: 3px 10px; border-radius: 999px; color: var(--text);
+  background: color-mix(in srgb, var(--gold) 14%, transparent); border: 1px solid color-mix(in srgb, var(--gold) 40%, transparent);
+}
+:root[data-theme="dark"] .disc-tag { background: color-mix(in srgb, var(--gold) 22%, transparent); }
+.disc-note { margin: 0; padding-left: 10px; border-left: 2px solid var(--line); color: var(--muted); font-size: .88rem; overflow-wrap: anywhere; }
+.disc-clash { border-left-color: var(--gold); color: var(--text); }
+.disc-links { display: flex; flex-wrap: wrap; gap: 16px; margin: 2px 0 0; font-size: .88rem; }
+.disc-links a { color: var(--text); text-underline-offset: 3px; }
+.disc-links a:hover { color: var(--gold); }
+.disc-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.disc-actions .nav-btn { flex: 1 1 auto; }
+
+/* Invite sheet: same sheet as the rest of the app, with a row of actions */
+#invite-sheet .sheet { max-height: 92vh; overflow-y: auto; }
+#invite-text { min-height: 9em; }
+.invite-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.invite-actions > * {
+  flex: 1 1 0; margin: 0; min-height: 44px; display: inline-flex; align-items: center; justify-content: center;
+  text-align: center; text-decoration: none;
+}
+.invite-actions > [hidden] { display: none; }
+#invite-sheet p.invite-foot { margin: 12px 0 0; font-size: .8rem; }
