@@ -167,11 +167,22 @@
           <div><p class="eyebrow">Ideas for free time</p><h1 class="date" id="discover-title">Discover</h1></div>
           <p class="summary" id="discover-summary">&nbsp;</p>
         </header>
+        <form id="discover-ask" class="disc-ask" role="search">
+          <label for="discover-q" class="sr-only">What are you looking for?</label>
+          <input id="discover-q" class="disc-q" type="search" enterkeyhint="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="A quiet walk, something outdoors, time with family…">
+          <button type="button" id="discover-mic" class="nav-btn" hidden aria-pressed="false" aria-label="Speak your search">Mic</button>
+        </form>
         <div class="disc-bar">
-          <div class="chip-row disc-filters" id="discover-filters" role="group" aria-label="Filter ideas"></div>
+          <div class="disc-chip-col">
+            <div class="chip-row disc-filters" id="discover-filters" role="group" aria-label="Category"></div>
+            <div class="disc-chip-line">
+              <span class="disc-kicker" id="discover-with-label">With</span>
+              <div class="chip-row disc-filters" id="discover-with" role="group" aria-labelledby="discover-with-label"></div>
+            </div>
+          </div>
           <p class="disc-where"><span id="discover-where"></span> <button type="button" class="btn-link" id="discover-locate">Use my location</button></p>
         </div>
-        <p class="disc-label" id="discover-label" hidden>Sample ideas</p>
+        <p class="disc-label" id="discover-label" hidden></p>
         <div class="disc-grid" id="discover-list"></div>
       </section>
 
@@ -367,13 +378,13 @@
   <div id="invite-sheet" class="sheet-backdrop" hidden>
     <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="invite-title">
       <div class="sheet-top">
-        <h2 id="invite-title">Invite your sister</h2>
+        <h2 id="invite-title">Draft an invite</h2>
         <button type="button" id="invite-close" class="sheet-close" aria-label="Close">×</button>
       </div>
       <p id="invite-sub" class="muted-line flush"></p>
       <label for="invite-text" class="sheet-label">Message</label>
       <textarea id="invite-text" class="sheet-input" rows="6" maxlength="1000"></textarea>
-      <label for="invite-phone" class="sheet-label">Her number <span class="muted-line">(optional, kept on this device)</span></label>
+      <label for="invite-phone" class="sheet-label"><span id="invite-who">Their number</span> <span class="muted-line">(optional, kept on this device)</span></label>
       <input id="invite-phone" class="sheet-input" type="tel" inputmode="tel" autocomplete="off" maxlength="30" placeholder="e.g. 609 555 0123">
       <div class="invite-actions">
         <button type="button" id="invite-copy" class="btn-primary">Copy</button>
