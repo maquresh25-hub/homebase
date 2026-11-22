@@ -130,6 +130,11 @@ function suggestSlot(item, cache) {
   const now = Date.now(), events = state.events || [];
   if (item.start && item.end > item.start && item.end > now) {
     let clash = overlapsProtected(item.start, item.end, events);
+    if (!clash) {
+      // The assistant's slot must also miss his calendar (classes, appointments), not just the protected blocks
+      const hit = events.find((ev) => ev && !ev.allDay && isFinite(ev.startMs) && isFinite(ev.endMs) && ev.startMs < item.end && ev.endMs > item.start);
+      if (hit) clash = typeof hit.title === "string" && hit.title.trim() ? hit.title.trim().slice(0, 80) : "a calendar event";
+    }
     if (!clash && isSunday(item.start) && item.category !== "restorative") clash = "Sunday rest";
     return { start: item.start, end: item.end, clash, fromDoc: true };
   }
@@ -253,7 +258,7 @@ function card(item, dist, slot, canSave) {
 // ---------------------------------------------------------------- actions
 function saveIdea(item) {
   if (!state.user || !fb) { toast("Sign in to save ideas."); return; }
-  const raw = item.place && !item.title.includes(item.place) ? item.title + " · " + item.place : item.title;
+  const raw = (item.place && !item.title.includes(item.place) ? item.title + " · " + item.place : item.title).slice(0, 200);   // MAX_TITLE
   const title = raw.replace(/\s+/g, " ").trim().toLowerCase();
   if (openIdeas().some((t) => t.title.toLowerCase() === title)) { toast("That's already in Ideas."); return; }
   const hasIdeas = state.lists.some((l) => l.id === IDEAS);
@@ -371,7 +376,19 @@ function wireDiscover() {
   $("invite-phone").addEventListener("change", () => setPref("sister-phone", cleanPhone($("invite-phone").value)));
   $("invite-copy").addEventListener("click", copyInvite);
   $("invite-share").addEventListener("click", shareInvite);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !sheet.hidden) closeInvite(); });
+  document.addEventListener("keydown", (e) => {
+    if (sheet.hidden) return;
+    if (e.key === "Escape") { closeInvite(); return; }
+    if (e.key !== "Tab") return;
+    // aria-modal: keep Tab and Shift+Tab inside the sheet
+    const f = [...sheet.querySelectorAll("button, a[href], textarea, input")]
+      .filter((n) => !n.disabled && n.getClientRects().length > 0);
+    if (!f.length) return;
+    const first = f[0], last = f[f.length - 1], active = document.activeElement;
+    if (!sheet.contains(active)) { e.preventDefault(); first.focus(); }
+    else if (e.shiftKey && active === first) { e.preventDefault(); last.focus(); }
+    else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus(); }
+  });
 }
 
 export { renderDiscover, startDiscover, stopDiscover };

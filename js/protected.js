@@ -19,7 +19,7 @@ const FAJR_ANGLE = 15;                             // ISNA: Fajr when the sun is
 // "First class" = the earliest timed calendar event that day, at least 20 minutes long, whose title
 // doesn't look like one of his own or religious blocks. A title heuristic, because the calendar
 // feed has no reliable "this is a class" flag. Accents and ʿ are stripped before matching.
-const NOT_CLASS = /qur|hifz|alim|qira|tajw|jum|salah|salat|prayer|fajr|dhuhr|zuhr|\basr\b|maghrib|isha|masjid|mosque|halaqa|family|sister|gym|workout|walk|lunch|dinner|breakfast|sleep|nap|commute|drive|study|review|homework|errand|personal|free time|idea|discover/;
+const NOT_CLASS = /qur|hifz|alim|qira|tajw|jum|salah|salat|prayer|fajr|dhuhr|zuhr|\basr\b|maghrib|isha|masjid|mosque|halaqa|family|sister|gym|workout|walk|lunch|dinner|breakfast|sleep|\bnaps?\b|commute|drive|study|review|homework|errand|\bpersonal|free time|idea|discover/;
 
 function plain(s) {
   return String(s || "").normalize("NFD").replace(/[\u0300-\u036f\u02BB-\u02BF'’`]/g, "").toLowerCase();
