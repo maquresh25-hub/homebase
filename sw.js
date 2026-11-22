@@ -1,6 +1,6 @@
 // Homebase service worker: lets the app open instantly and work offline.
 // Change VERSION whenever app files change so phones pick up the update.
-const VERSION = "homebase-v29";
+const VERSION = "homebase-v30";
 const FILES = [
   "./", "index.html", "app.css", "features.css", "app.js", "theme.js", "vault.js", "art.js", "skylines.js", "manifest.webmanifest",
   "fonts/cormorant-garamond-latin-wght-normal.woff2", "fonts/cormorant-garamond-latin-wght-italic.woff2", "fonts/jost-latin-wght-normal.woff2",
@@ -39,6 +39,8 @@ self.addEventListener("fetch", (e) => {
     return;
   }
   if (url.origin !== location.origin) return;
+  // A Homebase spot link is only a hash (#discover/spot?...). The network request is the
+  // document without that hash, so GitHub Pages and this cache still serve the app.
   // "no-cache" makes the browser check GitHub for a newer copy every time,
   // so updates show up right away instead of up to 10 minutes later.
   const fromNetwork = fetch(e.request.mode === "navigate" ? e.request.url : e.request, { cache: "no-cache" });

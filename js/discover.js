@@ -10,7 +10,7 @@ import { SEED_IDEAS } from "./discover-ideas.js";
 import { fb } from "./firebase.js";
 import { downloadIcs } from "./ics.js";
 import { locate, place } from "./location.js";
-import { cachedPlace, driveHours, driveText, halalSearchUrl, lookupPlace, recentPlaces, tripPlan, visitSlot } from "./places.js";
+import { cachedPlace, driveHours, driveText, halalSearchUrl, loadSharedSpot, lookupPlace, parseSpotHash, recentPlaces, spotLink, tripPlan, visitSlot } from "./places.js";
 import { HOME_POINT, freeSlots, isSunday, overlapsProtected } from "./protected.js";
 import { state } from "./state.js";
 import { IDEAS, addTask, openIdeas } from "./tasks.js";
@@ -64,6 +64,7 @@ let invite = null;   // { opener } while the invite sheet is open
 let micRec = null;
 let lookupGen = 0;
 let lookupTimer = 0;
+let spotGen = 0;
 
 function currentMode() { return pref("discover-mode", "near") === "away" ? "away" : "near"; }
 
@@ -285,6 +286,8 @@ function renderDiscover() {
   if (!view || view.hidden) return;
   wireDiscover();
   const signedIn = !!(state.user && fb);
+  const spot = parseSpotHash(location.hash);
+  if (spot) ensureSpot(spot);
   const away = currentMode() === "away";
   const cat = currentCategory(), who = currentWith();
   $("discover-filters").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.f === cat)));
@@ -297,6 +300,8 @@ function renderDiscover() {
   const locate = $("discover-locate");
   if (locate && locate.dataset.wired) locate.hidden = away || !navigator.geolocation;
   renderRecent(away);
+  if (spot) { renderAway(signedIn, cat, who); return; }
+  if (trip.single) { trip.single = false; trip.spotKey = ""; spotGen++; }
   if (away) { renderAway(signedIn, cat, who); return; }
 
   const items = ideaList();
@@ -347,13 +352,15 @@ function renderAway(signedIn, cat, who) {
   const list = $("discover-list");
   list.textContent = "";
   if (trip.status === "loading") {
-    $("discover-summary").textContent = "Looking up " + trip.query + "…";
-    list.appendChild(el("p", "empty", "Asking OpenStreetMap and Wikipedia. One search at a time."));
+    $("discover-summary").textContent = trip.single ? "Opening that spot…" : "Looking up " + trip.query + "…";
+    list.appendChild(el("p", "empty", trip.single ? "Loading this place from Wikipedia." : "Asking OpenStreetMap and Wikipedia. One search at a time."));
     return;
   }
   if (trip.status === "error") {
-    $("discover-summary").textContent = "Couldn't look that up";
-    list.appendChild(el("p", "empty", trip.error === "busy"
+    $("discover-summary").textContent = trip.error === "link" ? "Link not found" : "Couldn't look that up";
+    list.appendChild(el("p", "empty", trip.error === "link"
+      ? "This Homebase link doesn't open a spot. It may be incomplete or out of date."
+      : trip.error === "busy"
       ? "The map search is busy. Wait a moment, then try again."
       : trip.error === "none"
         ? "No place found with that name. Try a city or a state."
@@ -366,13 +373,18 @@ function renderAway(signedIn, cat, who) {
     return;
   }
   const plan = tripPlan(state.events || []);
-  const shown = trip.ideas.filter((item) => matches(item, cat, who, []))
+  const pool = trip.single ? trip.ideas : trip.ideas.filter((item) => matches(item, cat, who, []));
+  const shown = pool
     .map((item) => ({ item, dist: miles(item, place) }))
     .sort((a, b) => (a.dist === null ? Infinity : a.dist) - (b.dist === null ? Infinity : b.dist));
-  $("discover-summary").textContent = shown.length + (shown.length === 1 ? " place" : " places") + " near " + place.name;
+  $("discover-summary").textContent = trip.single && shown[0]
+    ? shown[0].item.title
+    : shown.length + (shown.length === 1 ? " place" : " places") + " near " + place.name;
   list.appendChild(tripBanner(place, plan, shown.length));
   if (!shown.length) list.appendChild(el("p", "empty", trip.ideas.length ? "Nothing here for this filter." : "Wikipedia had no parks, museums, or similar pages to show for that spot."));
   shown.forEach(({ item, dist }) => list.appendChild(card(item, dist, visitSlot(item, plan, place), signedIn, who, true)));
+  const highlighted = list.querySelector(".is-spot");
+  if (highlighted) highlighted.scrollIntoView({ block: "nearest" });
   const credit = el("p", "disc-credit", "Places, descriptions, and photos are from Wikipedia and Wikimedia Commons, only when a page has them. The point on the map is from OpenStreetMap, via Nominatim. Nothing here is a rating or a halal certification.");
   list.appendChild(credit);
 }
@@ -426,6 +438,7 @@ function openPlace(item) {
 function card(item, dist, slot, canSave, who, fromCenter) {
   const linked = "photo" in item;
   const c = el("article", "card disc-card" + (linked ? " is-link" : ""));
+  if (linked && trip.single && item.id === trip.spotId) c.classList.add("is-spot");
   if (linked) {
     const site = !!item.officialUrl;
     c.tabIndex = 0;
@@ -483,6 +496,7 @@ function card(item, dist, slot, canSave, who, fromCenter) {
   if (canSave) actions.appendChild(button("Save to Ideas", () => saveIdea(item)));
   actions.appendChild(button("Draft invite", (e) => openInvite(item, slot, who, e.currentTarget)));
   actions.appendChild(button("Add to calendar", () => addToCalendar(item, slot)));
+  if (linked && trip.place) actions.appendChild(button("Homebase link", (e) => shareSpot(item, e.currentTarget)));
   c.appendChild(actions);
   return c;
 }
@@ -643,6 +657,7 @@ function startMic() {
 }
 
 function setMode(mode) {
+  if (location.hash.indexOf("#discover/spot") === 0) history.replaceState(null, "", "#discover");
   setPref("discover-mode", mode === "away" ? "away" : "near");
   lookupGen++;
   clearTimeout(lookupTimer);
@@ -659,9 +674,69 @@ function onPrompt(immediate) {
   if (immediate) runLookup();
   else lookupTimer = setTimeout(runLookup, 800);
 }
+function ensureSpot(spec) {
+  const key = spec.bad ? "bad" : spec.id + "@" + spec.place.lat.toFixed(3) + "," + spec.place.lon.toFixed(3);
+  if (trip.spotKey === key && (trip.status === "ready" || trip.status === "error" || trip.status === "loading")) return;
+  lookupGen++;
+  clearTimeout(lookupTimer);
+  trip.spotKey = key;
+  trip.single = true;
+  setPref("discover-mode", "away");
+  const box = $("discover-q");
+  if (!spec.bad && box && spec.query) box.value = spec.query;
+  if (spec.bad) {
+    trip.status = "error"; trip.error = "link"; trip.query = ""; trip.place = null; trip.ideas = []; trip.spotId = "";
+    return;
+  }
+  trip.status = "loading"; trip.error = ""; trip.query = spec.query; trip.place = spec.place; trip.ideas = []; trip.spotId = "";
+  const gen = ++spotGen;
+  loadSharedSpot(spec).then((result) => {
+    if (gen !== spotGen || trip.spotKey !== key) return;
+    if (!result || result.error || !result.idea) {
+      trip.status = "error"; trip.error = "link"; trip.ideas = []; trip.spotId = "";
+    } else {
+      trip.status = "ready"; trip.place = result.place; trip.ideas = [result.idea]; trip.spotId = result.idea.id; trip.error = "";
+    }
+    renderDiscover();
+  });
+}
+async function shareSpot(item, opener) {
+  const url = spotLink(item, trip.place, trip.query || (trip.place && trip.place.name) || "");
+  if (!url) { toast("Couldn't make a Homebase link for that spot."); return; }
+  if (typeof navigator.share === "function") {
+    try { await navigator.share({ title: item.title + " · Homebase", text: item.title, url }); return; }
+    catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  let copied = false;
+  try { await navigator.clipboard.writeText(url); copied = true; }
+  catch (e) {
+    try {
+      const box = document.createElement("textarea");
+      box.value = url;
+      box.setAttribute("readonly", "");
+      box.style.position = "fixed";
+      box.style.left = "-9999px";
+      document.body.appendChild(box);
+      box.select();
+      copied = document.execCommand("copy");
+      box.remove();
+    } catch (x) { copied = false; }
+  }
+  if (opener) {
+    const was = opener.dataset.label || opener.textContent;
+    opener.dataset.label = was;
+    opener.textContent = copied ? "Copied" : "Copy failed";
+    setTimeout(() => { opener.textContent = was; }, 1600);
+  }
+  toast(copied ? "Homebase link copied." : "Couldn't copy the link.");
+}
 async function runLookup() {
   const q = queryText();
   const gen = ++lookupGen;
+  if (location.hash.indexOf("#discover/spot") === 0) history.replaceState(null, "", "#discover");
+  trip.single = false;
+  trip.spotKey = "";
+  spotGen++;
   if (currentMode() !== "away") return;
   if (q.length < 2) {
     trip.status = "idle"; trip.query = ""; trip.place = null; trip.ideas = []; trip.error = "";

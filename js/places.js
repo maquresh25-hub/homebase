@@ -177,11 +177,11 @@ function inArea(lat, lon, place) {
   }
   return km(place, { lat, lon }) <= 30;
 }
-function toIdea(page, place) {
+function toIdea(page, place, loose) {
   const title = page && page.title;
   const extract = typeof page.extract === "string" ? page.extract.replace(/\s+/g, " ").trim() : "";
   const coord = (page.coordinates || []).find((c) => c && c.globe === "earth" && isFinite(c.lat) && isFinite(c.lon));
-  if (!coord || skipPage(title, extract, place) || !inArea(coord.lat, coord.lon, place)) return null;
+  if (!coord || skipPage(title, extract, place) || (!loose && !inArea(coord.lat, coord.lon, place))) return null;
   const kind = classify(title, extract);
   if (!kind) return null;
   const url = safeWiki(page.fullurl);
@@ -303,4 +303,69 @@ export function visitSlot(item, plan, place) {
 
 export function halalSearchUrl(name) {
   return "https://www.google.com/search?q=" + encodeURIComponent("zabiha halal near " + (name || ""));
+}
+
+const SPOT_ORIGIN = "https://maquresh25-hub.github.io/homebase/#discover/spot?";
+
+function num(v, max) {
+  const n = parseFloat(v);
+  return typeof n === "number" && isFinite(n) && Math.abs(n) <= max ? n : null;
+}
+function pageIdOf(item) {
+  const id = String(item && item.id || "").replace(/^wiki-/, "");
+  return /^\d{1,12}$/.test(id) ? id : "";
+}
+
+// A short link. The page id is enough to load the spot again; the coordinates restore the drive.
+export function spotLink(item, place, query) {
+  const id = pageIdOf(item);
+  if (!id || !place || !isFinite(place.lat) || !isFinite(place.lon)) return "";
+  const params = new URLSearchParams();
+  params.set("v", "1");
+  params.set("id", id);
+  params.set("q", String(query || place.name || "").replace(/\s+/g, " ").trim().slice(0, 80));
+  params.set("dn", String(place.name || "").replace(/\s+/g, " ").trim().slice(0, 80));
+  params.set("dlat", place.lat.toFixed(5));
+  params.set("dlon", place.lon.toFixed(5));
+  if (isFinite(item.lat)) params.set("lat", Number(item.lat).toFixed(5));
+  if (isFinite(item.lon)) params.set("lon", Number(item.lon).toFixed(5));
+  return SPOT_ORIGIN + params.toString();
+}
+
+// null when the hash is not a spot link. { bad: true } when it is a spot link we cannot use.
+export function parseSpotHash(hash) {
+  const raw = String(hash || "").replace(/^#/, "");
+  if (raw !== "discover/spot" && !raw.startsWith("discover/spot?")) return null;
+  const q = raw.indexOf("?");
+  if (q < 0) return { bad: true };
+  let params;
+  try { params = new URLSearchParams(raw.slice(q + 1)); } catch (e) { return { bad: true }; }
+  const id = params.get("id") || "";
+  const lat = num(params.get("lat"), 180);
+  const lon = num(params.get("lon"), 180);
+  const dlat = num(params.get("dlat"), 90);
+  const dlon = num(params.get("dlon"), 180);
+  const centerLat = dlat != null ? dlat : lat;
+  const centerLon = dlon != null ? dlon : lon;
+  const name = String(params.get("dn") || params.get("q") || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!/^\d{1,12}$/.test(id) || centerLat == null || centerLon == null || Math.abs(centerLat) > 90 || !name) return { bad: true };
+  return {
+    id,
+    query: String(params.get("q") || name).replace(/\s+/g, " ").trim().slice(0, 80),
+    place: { name, lat: centerLat, lon: centerLon, wide: false, label: name },
+  };
+}
+
+// Reloads one Wikipedia page by id. Nothing is stored.
+export async function loadSharedSpot(spec) {
+  if (!spec || spec.bad || !spec.id) return { error: "bad" };
+  let pages;
+  try { pages = await wiki({ pageids: spec.id }); }
+  catch (e) { return { error: "network" }; }
+  const page = pages.find((p) => p && p.missing == null && p.pageid);
+  if (!page) return { error: "missing" };
+  const idea = toIdea(page, spec.place, true);
+  if (!idea) return { error: "missing" };
+  await attachWebsites([idea]);
+  return { place: spec.place, idea };
 }

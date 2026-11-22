@@ -13,9 +13,15 @@ import { $ } from "./util.js";
 
 
 // ================================================================ SHELL
+function tabFromHash(hash) {
+  const h = String(hash || "").replace(/^\//, "");
+  // #discover/spot?... is still the Discover tab. The hash never leaves the browser.
+  if (h === "discover" || h.startsWith("discover/")) return "discover";
+  return TABS.includes(h) ? h : "today";
+}
 function showTab() {
   const hash = location.hash.slice(1);
-  const tab = TABS.includes(hash) ? hash : "today";
+  const tab = tabFromHash(hash);
   rememberGridScroll();   // before the Calendar tab is hidden, note where its week grid was scrolled to
   TABS.forEach((t) => {
     $("view-" + t).hidden = t !== tab;
