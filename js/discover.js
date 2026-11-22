@@ -10,6 +10,7 @@ import { SEED_IDEAS } from "./discover-ideas.js";
 import { fb } from "./firebase.js";
 import { downloadIcs } from "./ics.js";
 import { locate, place } from "./location.js";
+import { cachedPlace, driveHours, driveText, halalSearchUrl, lookupPlace, recentPlaces, tripPlan, visitSlot } from "./places.js";
 import { HOME_POINT, freeSlots, isSunday, overlapsProtected } from "./protected.js";
 import { state } from "./state.js";
 import { IDEAS, addTask, openIdeas } from "./tasks.js";
@@ -56,10 +57,15 @@ const SYNONYMS = {
 };
 
 const discover = { status: "none", items: [] };   // none (signed out) | loading | ready | error
+const trip = { status: "idle", query: "", place: null, ideas: [], error: "" };   // Somewhere else
 let unsubscribeDiscover = null;
 let wired = false;
 let invite = null;   // { opener } while the invite sheet is open
 let micRec = null;
+let lookupGen = 0;
+let lookupTimer = 0;
+
+function currentMode() { return pref("discover-mode", "near") === "away" ? "away" : "near"; }
 
 // ---------------------------------------------------------------- data
 function text(v, n) { return typeof v === "string" ? v.replace(/\s+/g, " ").trim().slice(0, n) : ""; }
@@ -151,9 +157,10 @@ function origin() {
   return { at: HOME_POINT, label: "Distances from Pennington" };
 }
 function miles(item, at) { return item.lat !== null && item.lon !== null ? km(at, item) * 0.621371 : null; }
-function distText(mi) {
-  if (mi === null) return "";
-  return mi < 1 ? "Under 1 mi" : "About " + Math.round(mi) + " mi";
+function distText(mi, fromCenter) {
+  if (mi === null || !isFinite(mi)) return "";
+  const n = mi < 1 ? "Under 1 mi" : "About " + Math.round(mi) + " mi";
+  return fromCenter ? n + " from the center" : n;
 }
 function mapsLink(item) {
   if (item.mapsUrl) return item.mapsUrl;
@@ -278,12 +285,23 @@ function renderDiscover() {
   if (!view || view.hidden) return;
   wireDiscover();
   const signedIn = !!(state.user && fb);
-  const items = ideaList();
-  const from = origin(), cat = currentCategory(), who = currentWith();
-  const q = queryText(), groups = queryGroups(q);
-
+  const away = currentMode() === "away";
+  const cat = currentCategory(), who = currentWith();
   $("discover-filters").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.f === cat)));
   $("discover-with").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.w === who)));
+  const nearBtn = $("discover-near"), awayBtn = $("discover-away");
+  if (nearBtn) nearBtn.setAttribute("aria-pressed", String(!away));
+  if (awayBtn) awayBtn.setAttribute("aria-pressed", String(away));
+  const box = $("discover-q");
+  if (box) box.placeholder = away ? "A city or state, e.g. Philadelphia or Vermont" : "A quiet walk, something outdoors, time with family…";
+  const locate = $("discover-locate");
+  if (locate && locate.dataset.wired) locate.hidden = away || !navigator.geolocation;
+  renderRecent(away);
+  if (away) { renderAway(signedIn, cat, who); return; }
+
+  const items = ideaList();
+  const from = origin();
+  const q = queryText(), groups = queryGroups(q);
   $("discover-where").textContent = from.label + ".";
   const label = $("discover-label");
   if (discover.status === "error") { label.hidden = false; label.textContent = "Couldn't load your saved ideas"; }
@@ -298,14 +316,113 @@ function renderDiscover() {
   $("discover-summary").textContent = shown.length + (shown.length === 1 ? " idea" : " ideas") + ", nearest first";
   if (!shown.length) list.appendChild(el("p", "empty", q ? "Nothing in the list matches that." : "Nothing here for this filter yet."));
   const cache = new Map();   // free slots per day, shared by all cards in this render
-  shown.forEach(({ item, dist }) => list.appendChild(card(item, dist, suggestSlot(item, cache), signedIn, who)));
+  shown.forEach(({ item, dist }) => list.appendChild(card(item, dist, suggestSlot(item, cache), signedIn, who, false)));
   if (q && shown.length < FEW) list.appendChild(nearbyCard(q, from.at));
 }
 
-function card(item, dist, slot, canSave, who) {
+function renderRecent(away) {
+  const host = $("discover-recent");
+  if (!host) return;
+  host.textContent = "";
+  if (!away) { host.hidden = true; return; }
+  const names = recentPlaces().filter((name) => name.toLowerCase() !== queryText().toLowerCase());
+  host.hidden = names.length === 0;
+  names.forEach((name) => {
+    const b = el("button", "nav-btn", name);
+    b.type = "button";
+    b.addEventListener("click", () => {
+      const box = $("discover-q");
+      if (box) box.value = name;
+      onPrompt(true);
+    });
+    host.appendChild(b);
+  });
+}
+
+function renderAway(signedIn, cat, who) {
+  const place = trip.place;
+  const label = $("discover-label");
+  label.hidden = true;
+  $("discover-where").textContent = place ? "Ideas around " + place.name + "." : "A trip from Pennington. Drive time is a straight-line estimate.";
+  const list = $("discover-list");
+  list.textContent = "";
+  if (trip.status === "loading") {
+    $("discover-summary").textContent = "Looking up " + trip.query + "…";
+    list.appendChild(el("p", "empty", "Asking OpenStreetMap and Wikipedia. One search at a time."));
+    return;
+  }
+  if (trip.status === "error") {
+    $("discover-summary").textContent = "Couldn't look that up";
+    list.appendChild(el("p", "empty", trip.error === "busy"
+      ? "The map search is busy. Wait a moment, then try again."
+      : trip.error === "none"
+        ? "No place found with that name. Try a city or a state."
+        : "Couldn't reach the map or Wikipedia. Check your connection and try again."));
+    return;
+  }
+  if (!place) {
+    $("discover-summary").textContent = "Somewhere else";
+    list.appendChild(el("p", "empty", "Type a city or a state. Homebase looks up real Wikipedia pages there. It does not invent places."));
+    return;
+  }
+  const plan = tripPlan(state.events || []);
+  const shown = trip.ideas.filter((item) => matches(item, cat, who, []))
+    .map((item) => ({ item, dist: miles(item, place) }))
+    .sort((a, b) => (a.dist === null ? Infinity : a.dist) - (b.dist === null ? Infinity : b.dist));
+  $("discover-summary").textContent = shown.length + (shown.length === 1 ? " place" : " places") + " near " + place.name;
+  list.appendChild(tripBanner(place, plan, shown.length));
+  if (!shown.length) list.appendChild(el("p", "empty", trip.ideas.length ? "Nothing here for this filter." : "Wikipedia had no parks, museums, or similar pages to show for that spot."));
+  shown.forEach(({ item, dist }) => list.appendChild(card(item, dist, visitSlot(item, plan, place), signedIn, who, true)));
+  const credit = el("p", "disc-credit", "Places, descriptions, and photos are from Wikipedia and Wikimedia Commons, only when a page has them. The point on the map is from OpenStreetMap, via Nominatim. Nothing here is a rating or a halal certification.");
+  list.appendChild(credit);
+}
+
+function tripBanner(place, plan, count) {
+  const box = el("div", "card disc-trip");
+  box.appendChild(el("h3", "disc-title", place.name));
+  const where = el("p", "disc-place", place.wide
+    ? "A whole state is bigger than one search. These are Wikipedia pages inside it, nearest the center first. Wikipedia's own nearby search only covers about 6 miles."
+    : "Wikipedia pages within about 6 miles of the center, plus a few well-known ones a little farther out.");
+  box.appendChild(where);
+  box.appendChild(el("p", "disc-note", driveText(place)));
+  box.appendChild(el("p", "disc-note", planText(plan, place)));
+  const links = el("p", "disc-links");
+  const halal = anchor("Search zabiha halal near " + place.name, halalSearchUrl(place.name));
+  links.appendChild(halal);
+  box.appendChild(links);
+  box.appendChild(el("p", "disc-note", "That search does not mean any restaurant is halal. Check for yourself."));
+  return box;
+}
+function planText(plan, place) {
+  const far = driveHours(place) > 3;
+  const rest = " Sunday stays a rest day, so nothing is planned then.";
+  if (!plan) return "No open stretch in the next three weeks once protected blocks and your calendar are taken out." + rest;
+  const when = plan.day.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" });
+  const window = fmtTime(plan.slot.start) + " to " + fmtTime(plan.slot.end);
+  const day = plan.saturday ? when + " is open " + window + ", after protected blocks and anything already on the calendar."
+    : "No free Saturday in the next three weeks. " + when + " is open " + window + ".";
+  return day + (far ? " The straight-line drive is long, so this is not a casual day trip." : "") + rest;
+}
+
+function photoBlock(item) {
+  if (!item.photo) return el("div", "disc-photo disc-photo-empty", "No photo on Wikipedia");
+  const img = document.createElement("img");
+  img.className = "disc-photo";
+  img.alt = "";
+  img.loading = "lazy";
+  img.decoding = "async";
+  img.src = item.photo;
+  img.addEventListener("error", () => {
+    const ph = el("div", "disc-photo disc-photo-empty", "No photo on Wikipedia");
+    if (img.parentNode) img.replaceWith(ph);
+  });
+  return img;
+}
+function card(item, dist, slot, canSave, who, fromCenter) {
   const c = el("article", "card disc-card");
+  if ("photo" in item) c.appendChild(photoBlock(item));
   const top = el("div", "disc-top");
-  top.append(el("span", "disc-cat", CATS[item.category] || "Idea"), el("span", "disc-dist", distText(dist)));
+  top.append(el("span", "disc-cat", CATS[item.category] || "Idea"), el("span", "disc-dist", distText(dist, fromCenter)));
   c.append(top, el("h3", "disc-title", item.title));
   const where = [item.place && item.place !== item.title ? item.place : "", item.address].filter(Boolean).join(" · ");
   if (where) c.appendChild(el("p", "disc-place", where));
@@ -336,7 +453,7 @@ function card(item, dist, slot, canSave, who) {
 
   const links = el("p", "disc-links");
   links.appendChild(anchor("Map", mapsLink(item)));
-  if (item.url) links.appendChild(anchor("Website", item.url));
+  if (item.url) links.appendChild(anchor(item.sourceName || "Website", item.url));
   c.appendChild(links);
 
   const actions = el("div", "disc-actions");
@@ -488,7 +605,7 @@ function startMic() {
     if (!said) return;
     const box = $("discover-q");
     if (box) box.value = said;
-    renderDiscover();
+    onPrompt(true);
   };
   rec.onerror = (e) => {
     if (!e || e.error === "aborted" || e.error === "no-speech") return;
@@ -500,6 +617,57 @@ function startMic() {
   mic.textContent = "Stop";
   try { rec.start(); }
   catch (e) { stopMic(); toast("Speaking isn't available here. Type instead."); }
+}
+
+function setMode(mode) {
+  setPref("discover-mode", mode === "away" ? "away" : "near");
+  lookupGen++;
+  clearTimeout(lookupTimer);
+  if (mode === "away") {
+    const box = $("discover-q");
+    const saved = pref("discover-dest", "");
+    if (box && !box.value.trim() && saved) box.value = saved;
+    runLookup();
+  } else renderDiscover();
+}
+function onPrompt(immediate) {
+  if (currentMode() !== "away") { renderDiscover(); return; }
+  clearTimeout(lookupTimer);
+  if (immediate) runLookup();
+  else lookupTimer = setTimeout(runLookup, 800);
+}
+async function runLookup() {
+  const q = queryText();
+  const gen = ++lookupGen;
+  if (currentMode() !== "away") return;
+  if (q.length < 2) {
+    trip.status = "idle"; trip.query = ""; trip.place = null; trip.ideas = []; trip.error = "";
+    renderDiscover();
+    return;
+  }
+  const hit = cachedPlace(q);
+  if (hit) {
+    trip.status = "ready"; trip.query = q; trip.place = hit.place; trip.ideas = hit.ideas; trip.error = "";
+    setPref("discover-dest", hit.place.name);
+    renderDiscover();
+    return;
+  }
+  trip.status = "loading"; trip.query = q; trip.place = null; trip.ideas = []; trip.error = "";
+  renderDiscover();
+  try {
+    const result = await lookupPlace(q);
+    if (gen !== lookupGen || currentMode() !== "away") return;
+    if (result.error) {
+      trip.status = "error"; trip.error = result.error; trip.place = null; trip.ideas = [];
+    } else {
+      trip.status = "ready"; trip.place = result.place; trip.ideas = result.ideas; trip.error = "";
+      setPref("discover-dest", result.place.name);
+    }
+  } catch (e) {
+    if (gen !== lookupGen || currentMode() !== "away") return;
+    trip.status = "error"; trip.error = e && e.code === "busy" ? "busy" : "network"; trip.place = null; trip.ideas = [];
+  }
+  renderDiscover();
 }
 
 function wireDiscover() {
@@ -528,8 +696,10 @@ function wireDiscover() {
     withRow.appendChild(b);
   });
   const form = $("discover-ask");
-  form.addEventListener("submit", (e) => { e.preventDefault(); renderDiscover(); });
-  $("discover-q").addEventListener("input", () => renderDiscover());
+  form.addEventListener("submit", (e) => { e.preventDefault(); onPrompt(true); });
+  $("discover-q").addEventListener("input", () => onPrompt(false));
+  $("discover-near").addEventListener("click", () => setMode("near"));
+  $("discover-away").addEventListener("click", () => setMode("away"));
   const mic = $("discover-mic");
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) mic.hidden = true;
@@ -538,6 +708,7 @@ function wireDiscover() {
     mic.addEventListener("click", () => { if (micRec) stopMic(); else startMic(); });
   }
   const find = $("discover-locate");
+  find.dataset.wired = "1";
   if (!navigator.geolocation) find.hidden = true;
   find.addEventListener("click", () => {
     find.disabled = true;

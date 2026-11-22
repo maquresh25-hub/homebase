@@ -167,11 +167,16 @@
           <div><p class="eyebrow">Ideas for free time</p><h1 class="date" id="discover-title">Discover</h1></div>
           <p class="summary" id="discover-summary">&nbsp;</p>
         </header>
+        <div class="view-switch disc-mode" role="group" aria-label="Where to look">
+          <button type="button" class="nav-btn" id="discover-near" aria-pressed="true">Near me</button>
+          <button type="button" class="nav-btn" id="discover-away" aria-pressed="false">Somewhere else</button>
+        </div>
         <form id="discover-ask" class="disc-ask" role="search">
           <label for="discover-q" class="sr-only">What are you looking for?</label>
           <input id="discover-q" class="disc-q" type="search" enterkeyhint="search" maxlength="120" autocomplete="off" spellcheck="false" placeholder="A quiet walk, something outdoors, time with family…">
           <button type="button" id="discover-mic" class="nav-btn" hidden aria-pressed="false" aria-label="Speak your search">Mic</button>
         </form>
+        <div class="disc-recent" id="discover-recent" hidden></div>
         <div class="disc-bar">
           <div class="disc-chip-col">
             <div class="chip-row disc-filters" id="discover-filters" role="group" aria-label="Category"></div>
