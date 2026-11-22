@@ -430,6 +430,44 @@ function photoBlock(item) {
   });
   return img;
 }
+function telHref(phone) {
+  const n = String(phone || "").replace(/[^\d+]/g, "");
+  return n.replace(/\D/g, "").length >= 7 ? "tel:" + n : "";
+}
+function detailsBlock(item) {
+  const d = item.details || {};
+  const box = document.createElement("details");
+  box.className = "disc-details";
+  const sum = document.createElement("summary");
+  sum.textContent = "Details";
+  box.appendChild(sum);
+  const website = d.website || item.officialUrl || "";
+  const fields = [];
+  if (d.phone) fields.push(["Phone", d.phone, telHref(d.phone)]);
+  if (d.address) fields.push(["Address", d.address, ""]);
+  if (d.hours) fields.push([d.hoursLabel || "Hours", d.hours, ""]);
+  if (website) fields.push(["Website", website.replace(/^https?:\/\//, ""), website]);
+  if (d.fee) fields.push(["Admission", d.fee, ""]);
+  if (!fields.length) {
+    box.appendChild(el("p", "disc-note", "No contact details listed"));
+    const links = el("p", "disc-links");
+    links.appendChild(anchor("Maps", item.mapsUrl || mapsLink(item)));
+    box.appendChild(links);
+    return box;
+  }
+  const ul = el("ul", "disc-facts");
+  fields.forEach(([name, value, href]) => {
+    const li = el("li");
+    li.appendChild(el("b", "", name + " "));
+    if (href) li.appendChild(anchor(name === "Phone" ? d.phone : value, href));
+    else li.appendChild(document.createTextNode(value));
+    ul.appendChild(li);
+  });
+  box.appendChild(ul);
+  const sources = (d.sources || []).filter(Boolean);
+  if (sources.length) box.appendChild(el("p", "disc-src", "From " + sources.join(" and ")));
+  return box;
+}
 function openPlace(item) {
   const href = item.officialUrl || item.mapsUrl || mapsLink(item);
   const opened = window.open(href, "_blank", "noopener,noreferrer");
@@ -445,7 +483,7 @@ function card(item, dist, slot, canSave, who, fromCenter) {
     c.setAttribute("role", "link");
     c.setAttribute("aria-label", (site ? "Website" : "Maps") + ": " + item.title);
     c.addEventListener("click", (e) => {
-      if (e.target.closest("a, button, .disc-actions, .disc-tags")) return;
+      if (e.target.closest("a, button, .disc-actions, .disc-tags, details, summary")) return;
       openPlace(item);
     });
     c.addEventListener("keydown", (e) => {
@@ -486,6 +524,7 @@ function card(item, dist, slot, canSave, who, fromCenter) {
   }
   if (item.halalNote) c.appendChild(el("p", "disc-note", "Halal: " + item.halalNote));
   if (item.notes) c.appendChild(el("p", "disc-note", item.notes));
+  if (linked) c.appendChild(detailsBlock(item));
 
   const links = el("p", "disc-links");
   links.appendChild(anchor("Map", mapsLink(item)));
@@ -496,7 +535,7 @@ function card(item, dist, slot, canSave, who, fromCenter) {
   if (canSave) actions.appendChild(button("Save to Ideas", () => saveIdea(item)));
   actions.appendChild(button("Draft invite", (e) => openInvite(item, slot, who, e.currentTarget)));
   actions.appendChild(button("Add to calendar", () => addToCalendar(item, slot)));
-  if (linked && trip.place) actions.appendChild(button("Homebase link", (e) => shareSpot(item, e.currentTarget)));
+  if (linked && trip.place) actions.appendChild(button("Share spot", (e) => shareSpot(item, e.currentTarget)));
   c.appendChild(actions);
   return c;
 }
@@ -728,7 +767,7 @@ async function shareSpot(item, opener) {
     opener.textContent = copied ? "Copied" : "Copy failed";
     setTimeout(() => { opener.textContent = was; }, 1600);
   }
-  toast(copied ? "Homebase link copied." : "Couldn't copy the link.");
+  toast(copied ? "Spot link copied." : "Couldn't copy the link.");
 }
 async function runLookup() {
   const q = queryText();

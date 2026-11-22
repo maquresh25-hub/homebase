@@ -5,8 +5,8 @@ import { km } from "../theme.js";
 import { HOME_POINT, freeSlots, isSunday } from "./protected.js";
 import { addDays, pref, setPref, startOfDay } from "./util.js";
 
-const CACHE_KEY = "place-cache-v2";
-const SITE_KEY = "place-sites-v1";
+const CACHE_KEY = "place-cache-v3";
+const SITE_KEY = "place-facts-v1";
 const MAX_SAVED = 8;
 const GEO_GAP_MS = 1100;
 const WIKI = "https://en.wikipedia.org/w/api.php";
@@ -99,32 +99,183 @@ function safeSite(url) {
     return u.href;
   } catch (e) { return ""; }
 }
-function readSites() {
+function readFacts() {
   try {
     const raw = JSON.parse(pref(SITE_KEY, ""));
     return raw && typeof raw === "object" ? raw : {};
   } catch (e) { return {}; }
 }
-function writeSites(all) {
+function writeFacts(all) {
   const entries = Object.entries(all).slice(-300);
-  try { setPref(SITE_KEY, JSON.stringify(Object.fromEntries(entries))); } catch (e) { /* a miss just means Maps */ }
+  try { setPref(SITE_KEY, JSON.stringify(Object.fromEntries(entries))); } catch (e) { /* a miss just leaves the field blank */ }
 }
-// P856 is the official website. Preferred rank wins. An empty string means Wikidata has none.
-function siteFromEntity(entity) {
-  const claims = entity && entity.claims && entity.claims.P856 || [];
-  const ranked = claims.filter((c) => c && c.rank !== "deprecated" && c.mainsnak && c.mainsnak.snaktype === "value");
-  ranked.sort((a, b) => (a.rank === "preferred" ? 0 : 1) - (b.rank === "preferred" ? 0 : 1));
-  for (const c of ranked) {
-    const value = c.mainsnak.datavalue && c.mainsnak.datavalue.value;
-    const url = safeSite(typeof value === "string" ? value : "");
-    if (url) return url;
-  }
+function blankFacts() { return { phone: "", address: "", hours: "", hoursLabel: "Hours", website: "", fee: "", sources: [] }; }
+function rankedValues(entity, prop) {
+  const claims = entity && entity.claims && entity.claims[prop] || [];
+  return claims.filter((c) => c && c.rank !== "deprecated" && c.mainsnak && c.mainsnak.snaktype === "value")
+    .sort((a, b) => (a.rank === "preferred" ? 0 : 1) - (b.rank === "preferred" ? 0 : 1))
+    .map((c) => c.mainsnak.datavalue && c.mainsnak.datavalue.value)
+    .filter((v) => v != null);
+}
+function textValue(v) {
+  if (typeof v === "string") return v.replace(/\s+/g, " ").trim();
+  if (v && typeof v.text === "string") return v.text.replace(/\s+/g, " ").trim();
   return "";
 }
-async function attachWebsites(ideas) {
+function entityId(v) {
+  return v && typeof v.id === "string" && /^Q\d+$/.test(v.id) ? v.id : "";
+}
+function wikidataFacts(entity) {
+  const facts = blankFacts();
+  const phone = rankedValues(entity, "P1329").map(textValue).find(Boolean) || "";
+  const address = rankedValues(entity, "P6375").map(textValue).find(Boolean) || "";
+  const website = rankedValues(entity, "P856").map((v) => safeSite(typeof v === "string" ? v : "")).find(Boolean) || "";
+  const days = rankedValues(entity, "P3025").map(entityId).filter(Boolean);
+  const fee = rankedValues(entity, "P2555").find((v) => v && typeof v === "object" && v.amount) || null;
+  facts.phone = phone.slice(0, 40);
+  facts.address = address.slice(0, 160);
+  facts.website = website;
+  facts.openDayIds = days;
+  facts.feeRaw = fee;
+  return facts;
+}
+async function labelMap(ids) {
+  const want = [...new Set(ids.filter((id) => /^Q\d+$/.test(id)))];
+  if (!want.length) return {};
+  try {
+    const res = await fetch(WIKIDATA + "?" + new URLSearchParams({
+      action: "wbgetentities", ids: want.join("|"), props: "labels", languages: "en", format: "json", origin: "*",
+    }));
+    if (!res.ok) return {};
+    const data = await res.json();
+    const entities = data && data.entities || {};
+    const out = {};
+    want.forEach((id) => {
+      const label = entities[id] && entities[id].labels && entities[id].labels.en && entities[id].labels.en.value;
+      if (typeof label === "string" && label.trim()) out[id] = label.trim();
+    });
+    return out;
+  } catch (e) { return {}; }
+}
+function finishWikidata(raw, labels) {
+  const facts = blankFacts();
+  facts.phone = raw.phone || "";
+  facts.address = raw.address || "";
+  facts.website = raw.website || "";
+  const days = (raw.openDayIds || []).map((id) => labels[id]).filter(Boolean);
+  if (days.length) { facts.hours = days.join(", "); facts.hoursLabel = "Open days"; }
+  if (raw.feeRaw && raw.feeRaw.amount) {
+    const amount = String(raw.feeRaw.amount).replace(/^\+/, "").replace(/\.0+$/, "");
+    const unitId = String(raw.feeRaw.unit || "").split("/").pop();
+    const unit = labels[unitId] || "";
+    facts.fee = unit ? amount + " " + unit : amount;
+  }
+  if (facts.phone || facts.address || facts.hours || facts.website || facts.fee) facts.sources = ["Wikidata"];
+  delete facts.openDayIds;
+  delete facts.feeRaw;
+  return facts;
+}
+function osmAddress(tags) {
+  if (tags["addr:full"]) return String(tags["addr:full"]).replace(/\s+/g, " ").trim();
+  const line = [tags["addr:housenumber"], tags["addr:street"]].filter(Boolean).join(" ");
+  const town = [tags["addr:city"], tags["addr:state"], tags["addr:postcode"]].filter(Boolean).join(" ");
+  return [line, town].filter(Boolean).join(", ");
+}
+function osmFacts(tags) {
+  const facts = blankFacts();
+  facts.phone = String(tags.phone || tags["contact:phone"] || "").replace(/\s+/g, " ").trim().slice(0, 40);
+  facts.address = osmAddress(tags).slice(0, 160);
+  facts.hours = String(tags.opening_hours || "").replace(/\s+/g, " ").trim().slice(0, 160);
+  facts.hoursLabel = "Hours";
+  facts.website = safeSite(tags.website || tags["contact:website"] || "");
+  const fee = String(tags.fee || "").trim();
+  if (fee && !/^(yes|no|interval)$/i.test(fee)) facts.fee = fee.slice(0, 40);
+  if (facts.phone || facts.address || facts.hours || facts.website || facts.fee) facts.sources = ["OpenStreetMap"];
+  return facts;
+}
+function normName(s) {
+  return String(s || "").toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").replace(/\b(the|of|and|at|in|a)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+function namesMatch(wiki, osm) {
+  const a = normName(wiki), b = normName(osm);
+  if (!a || !b || b.length < 4) return false;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  const generic = new Set(["park", "museum", "house", "garden", "river", "historic", "national", "site", "center", "centre", "library", "hall", "trail", "state", "lake", "memorial", "building"]);
+  const aw = a.split(" ").filter((w) => w.length > 3 && !generic.has(w));
+  const bw = new Set(b.split(" ").filter((w) => w.length > 3 && !generic.has(w)));
+  const shared = aw.filter((w) => bw.has(w));
+  return shared.length >= 1 && shared.length >= Math.min(aw.length, bw.size);
+}
+const OSM_KEY = "place-osm-v1";
+function readOsm() {
+  try {
+    const raw = JSON.parse(pref(OSM_KEY, ""));
+    return raw && typeof raw === "object" ? raw : {};
+  } catch (e) { return {}; }
+}
+function writeOsm(all) {
+  const entries = Object.entries(all).slice(-200);
+  try { setPref(OSM_KEY, JSON.stringify(Object.fromEntries(entries))); } catch (e) { /* the next visit asks again */ }
+}
+async function nominatimJson(params) {
+  const wait = GEO_GAP_MS - (Date.now() - lastGeoAt);
+  if (wait > 0) await sleep(wait);
+  lastGeoAt = Date.now();
+  try {
+    const res = await fetch("https://nominatim.openstreetmap.org/reverse?" + new URLSearchParams(params), {
+      headers: { "Accept": "application/json" },
+    });
+    if (res.status === 429 || !res.ok) return null;
+    return res.json();
+  } catch (e) { return null; }
+}
+function osmFromReverse(data) {
+  if (!data || typeof data !== "object") return null;
+  const tags = data.extratags || {};
+  const addr = data.address || {};
+  const facts = osmFacts({
+    ...tags,
+    "addr:housenumber": addr.house_number,
+    "addr:street": addr.road,
+    "addr:city": addr.city || addr.town || addr.village,
+    "addr:state": addr.state,
+    "addr:postcode": addr.postcode,
+  });
+  if (!facts.sources.length && !tags.wikidata) return null;
+  return { name: data.name || "", wikidata: tags.wikidata || "", facts };
+}
+// One reverse lookup per spot, at most one a second, and only kept when it is the same place.
+async function nominatimFacts(ideas) {
+  const cache = readOsm();
+  for (const idea of ideas) {
+    if (!isFinite(idea.lat) || !isFinite(idea.lon)) continue;
+    const key = idea.qid || idea.lat.toFixed(4) + "," + idea.lon.toFixed(4);
+    let hit = cache[key];
+    if (!hit) {
+      const data = await nominatimJson({
+        format: "jsonv2", lat: String(idea.lat), lon: String(idea.lon),
+        zoom: "18", extratags: "1", addressdetails: "1",
+      });
+      hit = osmFromReverse(data) || { skip: true };
+      cache[key] = hit;
+      writeOsm(cache);
+    }
+    if (!hit || hit.skip || !hit.facts) continue;
+    const same = (idea.qid && hit.wikidata === idea.qid) || namesMatch(idea.title, hit.name);
+    if (!same) continue;
+    const base = idea.details || blankFacts();
+    ["phone", "address", "website", "fee"].forEach((k) => { if (!base[k] && hit.facts[k]) base[k] = hit.facts[k]; });
+    if (hit.facts.hours) { base.hours = hit.facts.hours; base.hoursLabel = "Hours"; }
+    const sources = new Set([...(base.sources || []), "OpenStreetMap"]);
+    base.sources = [...sources];
+    idea.details = base;
+    if (!idea.officialUrl && base.website) idea.officialUrl = base.website;
+  }
+}
+async function attachFacts(ideas) {
   const ids = [...new Set(ideas.map((i) => i.qid).filter((id) => /^Q\d+$/.test(id)))];
-  const known = readSites();
-  const missing = ids.filter((id) => !Object.prototype.hasOwnProperty.call(known, id));
+  const known = readFacts();
+  const missing = ids.filter((id) => !known[id] || typeof known[id] !== "object");
   if (missing.length) {
     try {
       const res = await fetch(WIKIDATA + "?" + new URLSearchParams({
@@ -133,14 +284,26 @@ async function attachWebsites(ideas) {
       if (res.ok) {
         const data = await res.json();
         const entities = data && data.entities || {};
-        missing.forEach((id) => { known[id] = siteFromEntity(entities[id]); });
-        writeSites(known);
+        const raws = {};
+        const labelIds = [];
+        missing.forEach((id) => {
+          const raw = wikidataFacts(entities[id]);
+          raws[id] = raw;
+          (raw.openDayIds || []).forEach((q) => labelIds.push(q));
+          if (raw.feeRaw && raw.feeRaw.unit) labelIds.push(String(raw.feeRaw.unit).split("/").pop());
+        });
+        const labels = await labelMap(labelIds);
+        missing.forEach((id) => { known[id] = finishWikidata(raws[id], labels); });
+        writeFacts(known);
       }
-    } catch (e) { /* no official site this time; the card opens Maps */ }
+    } catch (e) { /* details stay blank; the card still opens */ }
   }
   ideas.forEach((idea) => {
-    idea.officialUrl = safeSite(known[idea.qid] || "");
+    const facts = known[idea.qid] && typeof known[idea.qid] === "object" ? { ...blankFacts(), ...known[idea.qid] } : blankFacts();
+    idea.details = facts;
+    idea.officialUrl = safeSite(facts.website || "");
   });
+  await nominatimFacts(ideas);
 }
 function safeWiki(url) {
   try {
@@ -244,7 +407,7 @@ export async function lookupPlace(raw) {
   });
   ideas.sort((a, b) => km(place, a) - km(place, b));
   const trimmed = ideas.slice(0, 18);
-  await attachWebsites(trimmed);   // one Wikidata call for every page in this search
+  await attachFacts(trimmed);   // one Wikidata call, then one Overpass query, for this search
   const packed = { place, ideas: trimmed, at: Date.now() };
   const all = readCache();
   all[cacheKey(q)] = packed;
@@ -366,6 +529,6 @@ export async function loadSharedSpot(spec) {
   if (!page) return { error: "missing" };
   const idea = toIdea(page, spec.place, true);
   if (!idea) return { error: "missing" };
-  await attachWebsites([idea]);
+  await attachFacts([idea]);
   return { place: spec.place, idea };
 }
