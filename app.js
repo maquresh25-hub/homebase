@@ -4,6 +4,8 @@
 // Each task is its own document, so a change on one device never overwrites
 // other tasks, and nothing is ever hard-deleted (deleted tasks are flagged).
 
+import * as theme from "./theme.js";
+
 const FIREBASE_VERSION = "13.2.0";
 const FB = "https://www.gstatic.com/firebasejs/" + FIREBASE_VERSION + "/";
 const firebaseConfig = {
@@ -40,6 +42,7 @@ const state = {
   showDoneDeadlines: false,
   kitLinks: {},          // exam name -> link to its exam kit (synced in settings/kits)
   courses: [],           // subjects for tagging tasks (synced in settings/courses)
+  courseColors: {},      // subject name -> its colour
   range: null,        // [startMs, endMs] the main copy covers
 };
 let fb = null;        // loaded Firebase functions + instances
@@ -64,10 +67,15 @@ function showTab() {
 }
 
 function renderHeader() {
-  $("today-title").textContent = new Date().toLocaleDateString("en-US", {
-    weekday: "long", month: "short", day: "numeric",
-  });
+  const now = new Date();
+  $("today-day").textContent = now.toLocaleDateString("en-US", { weekday: "long" });
+  const title = $("today-title"), day = document.createElement("i");
+  title.textContent = now.toLocaleDateString("en-US", { month: "long" }) + " ";
+  day.textContent = now.getDate();
+  title.appendChild(day);
   renderSummary();
+  applyLook();
+  renderNow();
 }
 
 // Every number shown must be real and match the screen.
@@ -88,7 +96,16 @@ function renderSummary() {
   if (state.status === "ready") parts.push(taskText);
   const exam = nextExam();
   if (exam) parts.push(exam.title + " " + daysLeftText(exam));
-  $("today-summary").textContent = parts.length ? parts.join(" · ") : "\u00a0";
+  // Shown as pills; the separators stay in the text for screen readers and copy-paste
+  const host = $("today-summary");
+  host.textContent = parts.length ? "" : "\u00a0";
+  parts.forEach((text, i) => {
+    if (i) { const sep = document.createElement("span"); sep.className = "sep"; sep.textContent = " · "; host.appendChild(sep); }
+    const pill = document.createElement("span");
+    pill.className = "pill" + (exam && i === parts.length - 1 ? " is-key" : "");
+    pill.textContent = text;
+    host.appendChild(pill);
+  });
 }
 
 function fmtHour(h) {
@@ -246,8 +263,143 @@ function hasTimer(ev) { return ev.cat === "study" || isHifz(ev); }
 // One tick per day, even if the block repeats daily
 function hifzKey(ev) { return "hifz:" + ev.id + ":" + ymd(new Date(ev.startMs)); }
 
+// Today shows the day as a list (the hour grid lives in the Calendar tab)
 function renderTimeline() {
-  return drawDay($("timeline"), $("allday"), new Date(), { emptyText: "Nothing scheduled today. Enjoy the open time." });
+  drawAgenda($("timeline"), $("allday"), new Date());
+  applyLook();
+  renderNow();
+  return null;
+}
+
+function drawAgenda(tl, alldayBox, date) {
+  const dayEvents = eventsForDay(date);
+  const timed = dayEvents.filter(isBlock).sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const markers = dayEvents.filter((e) => !e.allDay && !isBlock(e)); // e.g. Canvas due times
+  renderAllDay(alldayBox, [...dayEvents.filter((e) => e.allDay), ...tasksDue(date)], markers);
+  tl.textContent = "";
+  tl.className = "timeline agenda";
+  tl.style.height = "";
+  const note = (text, linkText, onClick, href) => {
+    const p = document.createElement("p");
+    p.className = "tl-empty";
+    p.textContent = text;
+    if (linkText) {
+      const a = document.createElement(href ? "a" : "button");
+      if (href) a.href = href; else { a.type = "button"; a.className = "btn-link"; a.addEventListener("click", onClick); }
+      a.textContent = linkText;
+      p.appendChild(a);
+    }
+    tl.appendChild(p);
+  };
+  if (state.calStatus === "error" && !timed.length) note("Couldn't reach your calendar. ", "Try again", () => refreshEvents(true));
+  else if (state.calStatus === "none") note("Your calendar isn't connected yet. ", "Connect it", null, "#calendar");
+  else if (state.calStatus === "ready" && timed.length === 0) note("Nothing scheduled today. Enjoy the open time.");
+
+  const nowMs = Date.now();
+  let lastEnd = null;
+  timed.forEach((ev) => {
+    if (lastEnd !== null && ev.startMs - lastEnd >= 30 * 60000) {
+      const gap = document.createElement("div");
+      gap.className = "ag-free";
+      gap.textContent = fmtDuration(ev.startMs - lastEnd) + " free";
+      tl.appendChild(gap);
+    }
+    lastEnd = Math.max(lastEnd || 0, ev.endMs);
+    const row = document.createElement("div");
+    row.className = "ag-row" + (ev.endMs <= nowMs ? " is-past" : ev.startMs <= nowMs ? " is-now" : "");
+    const time = document.createElement("span");
+    time.className = "ag-time";
+    time.textContent = fmtTime(ev.startMs);
+    time.setAttribute("aria-hidden", "true");
+    const block = eventBlock(ev, 60);
+    block.style.height = "";
+    block.querySelectorAll(".event").forEach((b) => { b.style.height = ""; });
+    row.append(time, block);
+    if (row.classList.contains("is-now")) {
+      const tag = document.createElement("span");
+      tag.className = "ag-now";
+      tag.textContent = "Now";
+      row.appendChild(tag);
+    }
+    tl.appendChild(row);
+  });
+}
+
+// ---------- The "Now" area at the top of Today ----------
+// "SJU — Biology" reads better as "Biology" in large type
+function heroTitle(t) { const m = t.match(/^\S{2,6}\s+[—–-]\s+(.+)$/); return m ? m[1] : t; }
+function ringSvg(fraction, big, small, label) {
+  const R = 56, C = 2 * Math.PI * R, f = Math.max(0, Math.min(1, fraction));
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 148 148");
+  svg.setAttribute("class", "now-ring");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", label);
+  svg.innerHTML = '<circle class="ring-track" cx="74" cy="74" r="56"></circle>' +
+    '<circle class="ring-arc" cx="74" cy="74" r="56" stroke-dasharray="' + (C * f).toFixed(1) + " " + C.toFixed(1) + '" transform="rotate(-90 74 74)"></circle>' +
+    '<text class="ring-big" x="74" y="75" text-anchor="middle"></text><text class="ring-small" x="74" y="99" text-anchor="middle"></text>';
+  svg.querySelector(".ring-big").textContent = big;
+  svg.querySelector(".ring-small").textContent = small;
+  return svg;
+}
+function renderNow() {
+  const host = $("now");
+  if (!host) return;
+  host.textContent = "";
+  const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
+  if (state.calStatus !== "ready" && !state.events.length) {
+    host.appendChild(el("p", "now-empty", state.calStatus === "none" ? "Connect your calendar to see what's on now." : state.calStatus === "error" ? "Couldn't reach your calendar." : "Loading your day…"));
+    return;
+  }
+  const now = Date.now();
+  const blocks = todaysEvents().filter(isBlock).sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs);
+  const current = blocks.filter((e) => e.startMs <= now && e.endMs > now).pop() || null;
+  const next = blocks.find((e) => e.startMs > now) || null;
+  const main = el("div", "now-main"), body = el("div", "now-body"), tagRow = el("div", "now-tagrow");
+
+  let until = null, from = null, word = "left";
+  if (current) { until = current.endMs; from = current.startMs; }
+  else if (next) {
+    until = next.startMs; word = "free";
+    from = Math.max(startOfDay(new Date()).getTime(), ...blocks.filter((e) => e.endMs <= now).map((e) => e.endMs));
+  }
+  if (until !== null) {
+    const mins = Math.max(1, Math.ceil((until - now) / 60000));
+    const big = mins < 100 ? String(mins) : String(Math.round(mins / 6) / 10);
+    const unit = mins < 100 ? "MIN " : "HOURS ";
+    main.appendChild(ringSvg((now - from) / Math.max(1, until - from), big, unit + word.toUpperCase(), fmtDuration(until - now) + " " + word));
+  }
+  tagRow.appendChild(el("span", "now-tag", current ? "Now" : next ? "Free" : "Done"));
+  if (current) tagRow.appendChild(el("span", "now-when", fmtTime(current.startMs) + " to " + fmtTime(current.endMs)));
+  else if (next) tagRow.appendChild(el("span", "now-when", "Until " + fmtTime(next.startMs)));
+  if (look.subject) tagRow.appendChild(el("span", "now-when now-subject", look.subject));
+  body.appendChild(tagRow);
+  if (current) {
+    const title = el("button", "now-title", heroTitle(current.title));
+    title.type = "button";
+    title.setAttribute("aria-label", current.title + ". Open details");
+    title.addEventListener("click", () => openEventSheet(current));
+    body.appendChild(title);
+  } else body.appendChild(el("h2", "now-title", next ? "Free time" : blocks.length ? "Nothing else today" : "Nothing scheduled today"));
+  main.appendChild(body);
+  if (next) {
+    const up = el("div", "now-next");
+    up.append(el("span", "now-when", "Up next"), el("b", "", heroTitle(next.title)), el("small", "", fmtTime(next.startMs) + ", in " + fmtDuration(next.startMs - now)));
+    main.appendChild(up);
+  }
+  host.appendChild(main);
+  if (blocks.length > 1) {
+    const strip = el("div", "strip");
+    strip.setAttribute("role", "img");
+    const done = blocks.filter((e) => e.endMs <= now).length;
+    strip.setAttribute("aria-label", "Today's blocks: " + done + " done, " + (blocks.length - done) + " to go");
+    blocks.slice(0, 8).forEach((e) => {
+      const d = el("div", e.endMs <= now ? "is-past" : e.startMs <= now ? "is-now" : "", fmtTime(e.startMs).replace(/ (AM|PM)$/, ""));
+      d.style.setProperty("--w", Math.max(20, Math.round((e.endMs - e.startMs) / 60000)));
+      strip.appendChild(d);
+    });
+    host.appendChild(strip);
+  }
 }
 
 function scrollToNow(line) {
@@ -391,7 +543,15 @@ function saveCourses(list) {
   state.courses = list;
   renderCourses();
   if (!isEditingTask()) renderTodoPage();
-  save(fb.setDoc(coursesRef(), { list, updatedAt: Date.now() }));
+  // keep only the colours of subjects still on the list
+  const colors = Object.fromEntries(list.filter((c) => state.courseColors[c]).map((c) => [c, state.courseColors[c]]));
+  save(fb.setDoc(coursesRef(), { list, colors, updatedAt: Date.now() }));
+}
+function courseColour(name) { return state.courseColors[name] || theme.defaultColour(name, state.courses.indexOf(name)); }
+function setCourseColour(name, colour) {
+  if (!theme.isColour(colour)) return;
+  state.courseColors = { ...state.courseColors, [name]: colour.toUpperCase() };
+  saveCourses(state.courses);
 }
 async function loadCourses() {
   state.courses = [];
@@ -399,6 +559,9 @@ async function loadCourses() {
     const snap = await fb.getDoc(coursesRef());
     const list = snap.exists() ? snap.data().list : null;
     if (Array.isArray(list)) state.courses = [...new Set(list.map(cleanCourse).filter(Boolean))].slice(0, MAX_COURSES);
+    const colors = snap.exists() ? snap.data().colors : null;
+    state.courseColors = {};
+    if (colors && typeof colors === "object") state.courses.forEach((c) => { if (theme.isColour(colors[c])) state.courseColors[c] = colors[c].toUpperCase(); });
   } catch (e) { console.warn("Couldn't read your subjects:", e); }
   renderCourses();
   if (!isEditingTask()) renderTodoPage();
@@ -414,6 +577,7 @@ function addCourse(raw) {
 function renderCourses() {
   const host = $("course-list"), options = $("course-options");
   if (!host) return;
+  applyLook();
   host.textContent = ""; options.textContent = "";
   if (!state.courses.length) {
     const li = document.createElement("li");
@@ -425,6 +589,12 @@ function renderCourses() {
     const li = document.createElement("li");
     const name = document.createElement("span");
     name.textContent = c;
+    const swatch = document.createElement("input");
+    swatch.type = "color";
+    swatch.className = "course-colour";
+    swatch.value = courseColour(c).toLowerCase();
+    swatch.setAttribute("aria-label", "Colour for " + c);
+    swatch.addEventListener("change", () => setCourseColour(c, swatch.value));
     const del = document.createElement("button");
     del.type = "button"; del.className = "del"; del.textContent = "×";
     del.setAttribute("aria-label", "Remove subject: " + c);
@@ -433,7 +603,7 @@ function renderCourses() {
       saveCourses(before.filter((x) => x !== c));
       toast("Subject removed", "Undo", () => saveCourses(before));
     });
-    li.append(name, del);
+    li.append(swatch, name, del);
     host.appendChild(li);
     const o = document.createElement("option");
     o.value = c;
@@ -1027,7 +1197,7 @@ async function startData() {
     if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); loadCourses(); }
     else {
       state.kitLinks = {};
-      state.courses = []; renderCourses();
+      state.courses = []; state.courseColors = {}; renderCourses();
       renderTasks();
       state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
     }
@@ -2320,8 +2490,9 @@ function renderTimer() {
   document.body.classList.toggle("timer-on", !!s);
   bar.hidden = !s;
   clearInterval(timer.tick);
-  if (!s) return;
+  if (!s) { applyLook(); return; }
   $("timer-label").textContent = s.course || s.label;
+  applyLook();
   const update = () => { $("timer-time").textContent = fmtClock(Date.now() - s.start); };
   update();
   timer.tick = setInterval(update, 1000);
@@ -2937,142 +3108,49 @@ function wireGrowth() {
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("review-sheet").hidden) closeReview(); });
 }
 
-// ================================================================ SETTINGS: theme, time and weather colours
-// Saved on this device (localStorage), so the Mac and the iPhone can differ.
-const look = { wx: null, fetching: false };
-const WX_MS = 60 * 60 * 1000;
-const MOODS = { dawn: "#F0A58C", day: "#8FBBEA", golden: "#EDB95E", dusk: "#A483D6", night: "#5468B5" };
-const SKIES = { cloud: "#9AA3AD", rain: "#6F8FA8", snow: "#C9D6E2", storm: "#5B5F7A" };
-const SKY_NAMES = { clear: "Clear", cloud: "Cloudy", rain: "Rain", snow: "Snow", storm: "Storm" };
+// ================================================================ SETTINGS: colours
+// The choice is saved on this device (localStorage), so the Mac and the iPhone can differ.
+const look = { subject: "", time: "" };
 function pref(k, d) { try { return localStorage.getItem("hb-" + k) || d; } catch (e) { return d; } }
 function setPref(k, v) { try { localStorage.setItem("hb-" + k, v); } catch (e) {} }
-function savedPlace() { try { const p = JSON.parse(pref("loc", "null")); return p && isFinite(p.lat) && isFinite(p.lon) ? p : null; } catch (e) { return null; } }
-function wantsSky() { return pref("colours", "on") === "on" || (pref("theme", "auto") === "auto" && pref("night", "system") === "sunset"); }
 
-// Sunrise and sunset for today. Real ones when the weather has loaded (yesterday's are close enough), else 6:30 and 6:00.
-function sunTimes(now) {
-  const d = startOfDay(now).getTime(), w = look.wx;
-  if (w && w.sunrise && w.sunset) return { rise: d + (w.sunrise - startOfDay(new Date(w.sunrise)).getTime()), set: d + (w.sunset - startOfDay(new Date(w.sunset)).getTime()), real: true };
-  return { rise: d + 6.5 * 3600000, set: d + 18 * 3600000, real: false };
-}
-function moodAt(t, sun) {
-  const M = 60000;
-  if (t < sun.rise - 45 * M || t >= sun.set + 45 * M) return "night";
-  if (t < sun.rise + 45 * M) return "dawn";
-  if (t >= sun.set - 15 * M) return "dusk";
-  if (t >= sun.set - 90 * M) return "golden";
-  return "day";
-}
-// WMO weather codes, as Open-Meteo returns them
-function skyKind(code) {
-  if (code == null) return null;
-  if (code >= 95) return "storm";
-  if ((code >= 71 && code <= 77) || code === 85 || code === 86) return "snow";
-  if (code >= 51) return "rain";
-  if (code === 3 || code === 45 || code === 48) return "cloud";
-  return "clear";
+// The subject being studied right now: a running timer wins, then the calendar block happening now.
+function currentSubject() {
+  const texts = [], now = Date.now();
+  if (timer.running) texts.push(timer.running.course, timer.running.label);
+  const block = todaysEvents().filter(isBlock).filter((e) => e.startMs <= now && e.endMs > now).pop();
+  if (block) texts.push(block.title);
+  for (const text of texts) {
+    const name = text && theme.matchSubject(text, state.courses);
+    if (name) return name;
+  }
+  return "";
 }
 
 function applyLook() {
-  const root = document.documentElement, now = new Date(), t = now.getTime(), sun = sunTimes(now);
-  const theme = pref("theme", "auto");
-  let systemDark = false;
-  try { systemDark = matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) {}
-  const dark = theme === "dark" || (theme === "auto" && (pref("night", "system") === "sunset" ? (t < sun.rise || t >= sun.set) : systemDark));
-  root.dataset.theme = dark ? "dark" : "light";
-  setPref("theme-last", root.dataset.theme);
-  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.content = dark ? "#1A1A1C" : "#F7F4EE"; });
-  const fresh = look.wx && t - look.wx.at < 3 * WX_MS;
-  const kind = fresh ? skyKind(look.wx.code) : null;
-  if (pref("colours", "on") === "on") {
-    const mood = moodAt(t, sun);
-    root.dataset.mood = mood;
-    root.style.setProperty("--mood", kind && SKIES[kind] ? "color-mix(in srgb, " + MOODS[mood] + " 45%, " + SKIES[kind] + ")" : MOODS[mood]);
-  } else {
-    delete root.dataset.mood;
-    root.style.removeProperty("--mood");
-  }
-  look.kind = kind; look.sun = sun;
-}
-
-async function refreshWeather(force) {
-  const place = savedPlace();
-  if (!place || !wantsSky() || look.fetching) return;
-  if (!force && look.wx && Date.now() - look.wx.at < WX_MS) return;
-  look.fetching = true;
-  const ctrl = new AbortController(), timer = setTimeout(() => ctrl.abort(), 10000);
-  try {
-    const res = await fetch("https://api.open-meteo.com/v1/forecast?latitude=" + place.lat + "&longitude=" + place.lon +
-      "&current=weather_code&daily=sunrise,sunset&timeformat=unixtime&timezone=auto&forecast_days=1", { signal: ctrl.signal });
-    if (!res.ok) throw new Error("weather " + res.status);
-    const d = await res.json();
-    const rise = Number(d.daily && d.daily.sunrise && d.daily.sunrise[0]) * 1000, set = Number(d.daily && d.daily.sunset && d.daily.sunset[0]) * 1000;
-    const code = d.current ? Number(d.current.weather_code) : NaN;
-    if (!isFinite(rise) || !isFinite(set) || !isFinite(code)) throw new Error("weather: unexpected reply");
-    look.wx = { at: Date.now(), code, sunrise: rise, sunset: set };
-    look.failed = false;
-    setPref("wx", JSON.stringify(look.wx));
-  } catch (e) {
-    console.warn("Couldn't load the weather:", e);
-    look.failed = true;   // colours carry on from the clock
-  } finally {
-    clearTimeout(timer);
-    look.fetching = false;
-    applyLook();
-    if (!$("view-settings").hidden) renderSettings();
-  }
-}
-
-function askLocation() {
-  if (!navigator.geolocation) { toast("This device can't share its location."); return; }
-  const btn = $("set-loc");
-  btn.disabled = true; btn.textContent = "Finding…";
-  navigator.geolocation.getCurrentPosition((pos) => {
-    // one decimal place is about 10 km: enough for weather, not an address
-    setPref("loc", JSON.stringify({ lat: Math.round(pos.coords.latitude * 10) / 10, lon: Math.round(pos.coords.longitude * 10) / 10 }));
-    renderSettings();
-    refreshWeather(true);
-  }, () => {
-    renderSettings();
-    toast("Couldn't get your location. Colours will follow the clock.");
-  }, { timeout: 15000, maximumAge: 3600000 });
+  const choice = pref("theme", "auto");
+  const time = choice === "light" ? "afternoon" : choice === "dark" ? "night" : theme.timeOfDay(new Date());
+  const subject = currentSubject();
+  theme.apply(time, subject ? courseColour(subject) : null);
+  const changed = subject !== look.subject || time !== look.time;
+  look.subject = subject; look.time = time;
+  if (changed && $("view-settings") && !$("view-settings").hidden) renderSettings();
 }
 
 function renderSettings() {
   $("set-theme").value = pref("theme", "auto");
-  $("set-night").value = pref("night", "system");
-  $("set-colours").value = pref("colours", "on");
-  $("set-night-row").hidden = pref("theme", "auto") !== "auto";
-  const place = savedPlace(), btn = $("set-loc");
-  btn.disabled = false;
-  btn.textContent = place ? "Update location" : "Use my location";
-  $("set-loc-note").textContent = place ? "Set (rounded to the nearest town)" : "Not set. Colours and sunset follow the clock only.";
-  const sun = look.sun || sunTimes(new Date());
-  const bits = [];
-  if (sun.real) bits.push("Sunrise " + fmtTime(sun.rise) + " · sunset " + fmtTime(sun.set));
-  else if (wantsSky()) bits.push("Using 6:30 AM and 6 PM for sunrise and sunset until a location is set");
-  if (look.kind) bits.push("Now: " + SKY_NAMES[look.kind]);
-  if (place && look.failed) bits.push("Couldn't reach the weather service; it will try again");
-  $("set-now").textContent = bits.join(" · ");
+  const t = theme.TIMES[look.time];
+  $("set-now").textContent = "Right now: " + (t ? t.name : "") + " colours" + (look.subject ? " · " + look.subject : " · no subject on");
 }
 
 function wireSettings() {
-  try { look.wx = JSON.parse(pref("wx", "null")); } catch (e) { look.wx = null; }
-  const change = (id, key) => $(id).addEventListener("change", (e) => {
-    setPref(key, e.target.value);
-    applyLook(); renderSettings();
-    if (wantsSky()) refreshWeather(false);
-  });
-  change("set-theme", "theme"); change("set-night", "night"); change("set-colours", "colours");
-  $("set-loc").addEventListener("click", askLocation);
+  $("set-theme").addEventListener("change", (e) => { setPref("theme", e.target.value); applyLook(); renderSettings(); });
   $("course-form").addEventListener("submit", (e) => {
     e.preventDefault();
     if (!fb || !state.user) return;
     if (addCourse($("course-new").value)) $("course-new").value = "";
   });
-  try { matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyLook); } catch (e) {}
   applyLook();
-  refreshWeather(false);
 }
 
 // ================================================================ START
@@ -3082,7 +3160,7 @@ renderHeader();
 renderTasks();
 scrollToNow(renderTimeline());
 renderCalendar();
-setInterval(() => { renderHeader(); renderCalendar(); checkStale(); checkWeekRollover(); applyLook(); refreshWeather(false); }, 60 * 1000);
+setInterval(() => { renderHeader(); renderCalendar(); checkStale(); checkWeekRollover(); }, 60 * 1000);
 wireSignIn();
 wireCalendar();
 wireCalendarTab();

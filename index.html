@@ -10,7 +10,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="Homebase">
-  <script>try{var L=localStorage,p=L.getItem("hb-theme"),l=L.getItem("hb-theme-last");document.documentElement.dataset.theme=p==="light"||p==="dark"?p:L.getItem("hb-night")==="sunset"&&l?l:matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light"}catch(e){}</script>
+  <script>try{var p=localStorage.getItem("hb-theme"),t=new Date().getHours();document.documentElement.dataset.theme=p==="dark"||(p!=="light"&&(t>=19||t<5))?"dark":"light"}catch(e){}</script>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icon-192.png" type="image/png">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -48,11 +48,14 @@
     <main id="main">
       <!-- TODAY -->
       <section id="view-today" class="view" aria-labelledby="today-title">
-        <header class="day-head">
+        <div class="hero">
+        <header class="day-head hero-head">
           <a href="#settings" class="gear" aria-label="Settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg></a>
-          <h1 id="today-title" class="date"></h1>
+          <div><p class="eyebrow" id="today-day">&nbsp;</p><h1 id="today-title" class="date"></h1></div>
           <p class="summary" id="today-summary">&nbsp;</p>
         </header>
+        <section class="now-area" id="now" aria-label="Now"></section>
+        </div>
         <div class="today-grid">
           <div class="card timeline-card">
             <div class="allday" id="allday" hidden></div>
@@ -181,20 +184,14 @@
         <header class="day-head"><h1 class="date">Settings</h1></header>
         <div class="card settings">
           <h2>Appearance</h2>
-          <label class="set-row"><span>Theme<small>Automatic follows the choice below</small></span>
-            <select id="set-theme"><option value="auto">Automatic</option><option value="light">Light</option><option value="dark">Dark</option></select></label>
-          <label class="set-row" id="set-night-row"><span>Automatic goes dark<small>With your device's dark mode, or when the sun sets</small></span>
-            <select id="set-night"><option value="system">With dark mode</option><option value="sunset">At sunset</option></select></label>
-          <label class="set-row"><span>Time and weather colours<small>A faint tint behind the page that follows the sky</small></span>
-            <select id="set-colours"><option value="on">On</option><option value="off">Off</option></select></label>
-          <div class="set-row"><span>Location<small id="set-loc-note">Not set. Colours follow the clock only.</small></span>
-            <button type="button" class="nav-btn" id="set-loc">Use my location</button></div>
+          <label class="set-row"><span>Colours<small>Automatic follows the time of day: light by day, dark from 7 PM</small></span>
+            <select id="set-theme"><option value="auto">Automatic</option><option value="light">Always light</option><option value="dark">Always dark</option></select></label>
           <p class="set-foot" id="set-now"></p>
-          <p class="set-foot">These settings are saved on this device. Your location is rounded to the nearest town and only used to ask for the weather. Weather data by <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo.com</a>.</p>
+          <p class="set-foot">The page follows the time of day, and the top of the screen takes the colour of the subject you are studying. This choice is saved on this device.</p>
         </div>
         <div class="card settings">
           <h2>Subjects</h2>
-          <p class="set-foot set-lead">Your courses and anything else you track. To-dos can be tagged with one and filtered by it.</p>
+          <p class="set-foot set-lead">Your courses and anything else you track. To-dos can be tagged with one, and the app takes on a subject's colour during its class or study session.</p>
           <ul id="course-list" class="course-list"></ul>
           <form id="course-form" class="course-form" autocomplete="off">
             <label for="course-new" class="sr-only">New subject</label>
