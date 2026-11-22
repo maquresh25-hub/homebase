@@ -683,6 +683,38 @@ button.wk-day { position: absolute; top: 0; height: 62px; display: flex; flex-di
 .wind p { margin: 0 0 6px; }
 .wind .wind-next { margin-top: 12px; color: var(--muted); }
 
+/* ---------- Screen Time card ---------- */
+.st-chart {
+  display: flex; align-items: flex-end; gap: 6px;
+  height: 64px; margin-bottom: 14px;
+}
+.st-col {
+  flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;
+}
+.st-bar {
+  width: 100%; border-radius: 4px 4px 0 0;
+  background: var(--muted); opacity: 0.45;
+  height: var(--h, 0%); min-height: 3px; transition: height 0.3s;
+}
+.st-bar.st-today { background: var(--accent); opacity: 1; }
+.st-day { font-size: 10px; color: var(--muted); }
+.st-summary { margin-bottom: 10px; }
+.st-total { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+.st-apps { margin: 4px 0 6px; padding-left: 14px; color: var(--muted); font-size: 13px; }
+.st-apps li { margin-bottom: 2px; }
+.st-edit { font-size: 12px; padding: 0; margin-top: 2px; }
+.st-log { margin-top: 4px; width: 100%; }
+/* Sheet */
+.st-field-label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 4px; }
+.st-hint { font-weight: 400; opacity: 0.7; }
+.st-input {
+  width: 100%; box-sizing: border-box;
+  padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface2);
+  color: var(--text); font-size: 15px; font-family: inherit;
+}
+.st-textarea { resize: vertical; min-height: 90px; }
+
 /* ---------- v17: This week goals, missed questions, Sunday review ---------- */
 .goal {
   display: flex; align-items: center; gap: 12px; padding: 10px 0;
