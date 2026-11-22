@@ -73,7 +73,11 @@
               <h2>This week</h2>
               <div id="goals"><p class="empty">Loading…</p></div>
             </div>
-            <div class="card">
+            <div class="card" id="week-events-card" hidden>
+              <h2>This week's events</h2>
+              <div id="week-events-body"></div>
+            </div>
+            <div class="card exam-wrap">
               <h2>Upcoming exam</h2>
               <div id="exam-card"><p class="empty">No exams in the next 30 days.</p></div>
             </div>
@@ -134,6 +138,13 @@
           </div>
         </div>
         <p class="account"><button type="button" class="btn-link" id="cal-settings" hidden>Change calendar link</button></p>
+
+        <!-- Campus events from the Monday digest (read-only) -->
+        <section class="card events-card" id="events-card" aria-labelledby="events-title">
+          <h2 id="events-title">Events</h2>
+          <p class="ev-sub" id="events-sub" hidden></p>
+          <div id="events-list"><p class="empty">Sign in to see campus events.</p></div>
+        </section>
       </section>
 
       <!-- TO-DO -->

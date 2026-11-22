@@ -1,5 +1,6 @@
 import { cal, rememberGridScroll, renderCalendarTab } from "./calendar-tab.js";
 import { renderDiscover } from "./discover.js";
+import { renderEventsSection, renderWeekEventsCard } from "./events.js";
 import { renderMissed } from "./growth.js";
 import { renderJournal } from "./journal.js";
 import { renderKits } from "./kits.js";
@@ -27,7 +28,7 @@ function showTab() {
   if (tab === "journal") renderJournal();
   if (tab === "settings") renderSettings();
   if (tab === "discover") renderDiscover();
-  if (tab === "calendar") renderCalendarTab();
+  if (tab === "calendar") { renderCalendarTab(); renderEventsSection(); }
   else cal.gridLive = false;   // a hidden calendar loses its scroll position; it's put back on return
 }
 
@@ -41,6 +42,7 @@ function renderHeader() {
   renderSummary();
   applyLook();
   renderNow();
+  renderWeekEventsCard(true);   // drops events that have ended; leaves the card alone while it has focus
 }
 
 export { renderHeader, showTab };

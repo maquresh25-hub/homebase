@@ -2,6 +2,7 @@ import { showSignIn } from "./auth.js";
 import { loadCalendarSettings, renderCalendar } from "./calendar.js";
 import { loadCourses, renderCourses } from "./courses.js";
 import { renderDiscover, startDiscover, stopDiscover } from "./discover.js";
+import { renderEventsSection, renderWeekEventsCard, startCampusEvents, stopCampusEvents } from "./events.js";
 import { fb, loadFirebase } from "./firebase.js";
 import { startGrowth, stopGrowth } from "./growth.js";
 import { startJournal, stopJournal } from "./journal.js";
@@ -114,9 +115,11 @@ async function startData() {
     stopSessions();
     stopGrowth();
     stopDiscover();
-    if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); loadCourses(); loadLists(); startJournal(user); startScreenTime(user); startDiscover(user); }
+    stopCampusEvents();
+    if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); loadCourses(); loadLists(); startJournal(user); startScreenTime(user); startDiscover(user); startCampusEvents(user); }
     else {
       renderDiscover();
+      renderEventsSection(); renderWeekEventsCard();
       state.kitLinks = {};
       state.courses = []; state.courseColors = {}; renderCourses();
       state.lists = DEFAULT_LISTS; state.kits = []; renderLists(); renderKits(); stopJournal(); stopScreenTime();

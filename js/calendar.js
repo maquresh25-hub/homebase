@@ -1,4 +1,5 @@
 import { cal, openEventSheet, renderCalendarTab } from "./calendar-tab.js";
+import { renderEventsSection, renderWeekEventsCard } from "./events.js";
 import { fb } from "./firebase.js";
 import { renderExamCard } from "./kits.js";
 import { renderScreenTimeCard } from "./screentime.js";
@@ -173,6 +174,9 @@ function drawCalendar() {
   renderExamCard();
   renderCalendarTab();
   renderSummary();
+  // Protected-block notes depend on the calendar (first class of the day), so events follow it
+  renderWeekEventsCard();
+  renderEventsSection();
 }
 
 function cacheKey() { return EVENTS_CACHE + ":" + (state.user ? state.user.uid : ""); }
