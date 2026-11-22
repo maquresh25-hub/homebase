@@ -38,6 +38,8 @@ export function contrast(a, b) {
   return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
 }
 const readable = (bg, a, b) => (contrast(bg, a) >= contrast(bg, b) ? a : b);
+// the more readable of two palette colours, or plain black/white if neither reaches 4.5:1
+const best = (bg, a, b) => { const c = readable(bg, a, b); return contrast(bg, c) >= 4.5 ? c : readable(bg, "#111111", "#FFFFFF"); };
 export const isColour = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
 
 // ---- subjects
@@ -108,13 +110,14 @@ export function palette(timeId, subjectColour) {
 
 let applied = "";
 export function apply(timeId, subjectColour, city) {
-  const key = city && CITIES[city] ? "city|" + city : timeId + "|" + (subjectColour || "");
+  const fixed = city && (CITIES[city] || EDITIONS[city]);   // a city or a design edition: one held palette
+  const key = fixed ? "city|" + city : timeId + "|" + (subjectColour || "");
   if (key === applied) return;
   applied = key;
-  const p = city && CITIES[city] ? cityPalette(city) : palette(timeId, subjectColour), root = document.documentElement;
+  const p = fixed ? cityPalette(city) : palette(timeId, subjectColour), root = document.documentElement;
   Object.entries(p.vars).forEach(([k, v]) => root.style.setProperty(k, v));
   root.dataset.theme = p.dark ? "dark" : "light";
-  root.dataset.time = city && CITIES[city] ? "city" : timeId;
+  root.dataset.time = fixed ? (CITIES[city] ? "city" : "edition") : timeId;
   document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.content = p.deep; });
 }
 // ---- travel mode: a city's own palette (always light) when you are there and away from home
@@ -140,14 +143,28 @@ export function cityNear(here, home) {
   const hit = Object.entries(CITIES).map(([key, c]) => [key, km(here, c)]).filter(([, d]) => d <= 60).sort((a, b) => a[1] - b[1])[0];
   return hit ? hit[0] : null;
 }
+// ---- fixed palettes from the earlier design editions, pickable in Settings > Style
+export const EDITIONS = {
+  Main: { name: "Monochrome", group: "Colour", p: ["#111110", "#8C8881", "#F4F1EA", "#E0DAD0", "#F4F1EA", "#CFC9BC", "#CDB07A", "#111110", "#57534D", "#7A5E2E"] },
+  Navy: { name: "Midnight navy + gold", group: "Colour", p: ["#14213D", "#7F95BD", "#F6F1E7", "#EBD9AE", "#F6F1E7", "#C5CBDA", "#E0BE6A", "#14213D", "#4F5462", "#A07C33"] },
+  Forest: { name: "Forest green + ivory", group: "Colour", p: ["#1F3329", "#93AE93", "#F3F1E8", "#E6D6A8", "#F3F1E8", "#C6D0C4", "#D8BA6E", "#1F3329", "#4E564F", "#8C6B2E"] },
+  Espresso: { name: "Saddle brown + orange", group: "Colour", p: ["#3A2418", "#C68B55", "#F3E9DA", "#F1C9A0", "#F3E9DA", "#D8C7B5", "#F08A3C", "#2E211A", "#5A4D43", "#C25A12"] },
+  Burgundy: { name: "Burgundy + blush", group: "Colour", p: ["#4A1220", "#C48797", "#F7ECEA", "#F0D2C4", "#F7ECEA", "#E0C3C8", "#F0B7A6", "#4A1220", "#5E4A4D", "#A8566A"] },
+  Gold: { name: "Gold", group: "Colour", p: ["#B8975A", "#E6D3A3", "#F8F3E6", "#F3CDB4", "#1C1B19", "#3F351F", "#5A3E1B", "#1C1B19", "#584F40", "#8A6A2F"] },
+  Marrakech: { name: "Marrakech", group: "Place", p: ["#8C3B22", "#E0A26B", "#F6EAD9", "#CFE0DA", "#FBF1E2", "#F0D2BF", "#F4D08A", "#3B1D12", "#5E4E44", "#1F6F78"] },
+  Tuscany: { name: "Tuscany", group: "Place", p: ["#4A5230", "#C9B36B", "#F5EEDC", "#E9C7A0", "#F5EEDC", "#D5D8BF", "#EBCB7A", "#2C311C", "#55533F", "#A35A2A"] },
+  Highlands: { name: "Highlands", group: "Place", p: ["#33413A", "#9A8FB0", "#EEF0EA", "#DAD3E6", "#EEF0EA", "#C5CEC8", "#D9C9F0", "#26312B", "#50574F", "#6B5791"] },
+  Sahara: { name: "Sahara", group: "Place", p: ["#7A4A1E", "#E3B77A", "#FAF0DD", "#F3C9A3", "#FCF3E3", "#EBD3B4", "#FFE0A3", "#3D2410", "#5F5040", "#B0621A"] },
+  Alps: { name: "Alpine lake", group: "Place", p: ["#1F4E5A", "#8EC1C4", "#F1F6F4", "#D6E6EE", "#F1F6F4", "#C2D6D8", "#BFE9E4", "#173B44", "#4B5A5C", "#1F6F78"] },
+};
 export function cityPalette(key) {
-  const [deep, mid, ground, third, heroText, heroMuted, heroAccent, text, muted, accent] = CITIES[key].p;
+  const [deep, mid, ground, third, heroText, heroMuted, heroAccent, text, muted, accent] = (CITIES[key] || EDITIONS[key]).p;
   return {
     dark: false, deep,
     vars: {
       "--bg": ground, "--card": "#FFFFFF", "--text": text, "--muted": muted, "--line": "rgba(" + rgb(text) + ",0.16)", "--gold": accent,
       "--deep": deep, "--mid": mid, "--third": third, "--hero-text": heroText, "--hero-muted": heroMuted, "--hero-accent": heroAccent,
-      "--on-accent": readable(heroAccent, deep, heroText), "--on-gold": readable(accent, ground, text), "--hero-line": "rgba(" + rgb(heroText) + ",0.2)",
+      "--on-accent": best(heroAccent, deep, heroText), "--on-gold": best(accent, ground, text), "--hero-line": "rgba(" + rgb(heroText) + ",0.2)",
     },
   };
 }

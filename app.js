@@ -3567,11 +3567,13 @@ async function renderBackdrop(city, subject) {
 }
 
 function applyLook() {
-  const choice = pref("theme", "auto");
-  const time = choice === "light" ? "afternoon" : choice === "dark" ? "night" : theme.timeOfDay(new Date());
-  const subject = currentSubject(), city = currentCity();
+  const choice = pref("theme", "auto"), style = pref("style", "auto");
+  const held = style.startsWith("time:") && theme.TIMES[style.slice(5)] ? style.slice(5) : "";   // one time-of-day look, held all day
+  const time = held || (choice === "light" ? "afternoon" : choice === "dark" ? "night" : theme.timeOfDay(new Date()));
+  const fixed = theme.EDITIONS[style] || theme.CITIES[style] ? style : null;                    // one palette, held all day
+  const subject = currentSubject(), city = fixed || currentCity();
   theme.apply(time, subject ? courseColour(subject) : null, city);
-  renderBackdrop(city, subject);
+  renderBackdrop(theme.CITIES[city] ? city : null, subject);
   const changed = subject !== look.subject || time !== look.time || city !== look.city;
   look.subject = subject; look.time = time; look.city = city;
   if (changed && $("view-settings") && !$("view-settings").hidden) renderSettings();
@@ -3582,7 +3584,21 @@ function renderSettings() {
   $("set-art").checked = pref("art", "on") === "on";
   $("set-travel").checked = pref("travel", "on") === "on";
   const t = theme.TIMES[look.time];
-  $("set-now").textContent = look.city ? "Right now: " + theme.CITIES[look.city].name + " colours (travel mode)"
+  const style = $("set-style");
+  if (!style.options.length) {
+    const group = (label, items) => { const g = document.createElement("optgroup"); g.label = label; items.forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; g.appendChild(o); }); style.appendChild(g); };
+    group("Everyday", [["auto", "Time of day + subject"]]);
+    group("One time of day", Object.entries(theme.TIMES).map(([k, t]) => ["time:" + k, t.name]));
+    group("Colour editions", Object.entries(theme.EDITIONS).filter(([, e]) => e.group === "Colour").map(([k, e]) => [k, e.name]));
+    group("Places", Object.entries(theme.EDITIONS).filter(([, e]) => e.group === "Place").map(([k, e]) => [k, e.name]));
+    group("Cities", Object.entries(theme.CITIES).map(([k, c]) => [k, c.name]));
+  }
+  style.value = pref("style", "auto");
+  if (style.value !== pref("style", "auto")) style.value = "auto";
+  $("set-theme-row").hidden = style.value !== "auto";
+  const fixedLook = theme.EDITIONS[look.city] || (style.value !== "auto" && theme.CITIES[look.city]);
+  $("set-now").textContent = fixedLook ? "Right now: " + fixedLook.name + " (held by Style)"
+    : look.city ? "Right now: " + theme.CITIES[look.city].name + " colours (travel mode)"
     : "Right now: " + (t ? t.name : "") + " colours" + (look.subject ? " · " + look.subject : " · no subject on");
   const city = $("set-city");
   if (!city.options.length) {
@@ -3595,6 +3611,7 @@ function renderSettings() {
 
 function wireSettings() {
   $("set-theme").addEventListener("change", (e) => { setPref("theme", e.target.value); applyLook(); renderSettings(); });
+  $("set-style").addEventListener("change", (e) => { setPref("style", e.target.value); applyLook(); renderSettings(); });
   $("set-art").addEventListener("change", (e) => { setPref("art", e.target.checked ? "on" : "off"); applyLook(); });
   $("set-travel").addEventListener("change", (e) => { setPref("travel", e.target.checked ? "on" : "off"); applyLook(); renderSettings(); });
   $("set-city").addEventListener("change", (e) => { setPref("city", e.target.value); applyLook(); renderSettings(); });
