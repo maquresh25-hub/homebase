@@ -33,6 +33,7 @@
     </form>
   </section>
 
+  <div id="backdrop" aria-hidden="true"></div>
   <div class="app">
     <!-- Sidebar on Mac, bottom bar on iPhone -->
     <nav class="tabs" aria-label="Main">
@@ -41,7 +42,7 @@
       <a href="#calendar" data-tab="calendar"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="5" width="17" height="15" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/></svg><span>Calendar</span></a>
       <a href="#todo" data-tab="todo"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/></svg><span>To-Do</span></a>
       <a href="#study" data-tab="study"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7.5 12 4l8 3.5-8 3.5z"/><path d="M7 9.3V14c0 1.4 2.2 2.8 5 2.8s5-1.4 5-2.8V9.3M20 7.5V13"/></svg><span>Study</span></a>
-      <a href="#materials" data-tab="materials"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7a2 2 0 0 1 2-2h4l2 2h6a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2z"/></svg><span>Materials</span></a>
+      <a href="#journal" data-tab="journal"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4h11a2 2 0 0 1 2 2v14H8a2 2 0 0 1-2-2z"/><path d="M6 18a2 2 0 0 1 2-2h11M10 8h5M10 11h5"/></svg><span>Journal</span></a>
       <a href="#settings" data-tab="settings"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4 18 18M6 18l1.6-1.6M16.4 7.6 18 6"/></svg><span>Settings</span></a>
     </nav>
 
@@ -156,6 +157,19 @@
             </form>
           </div>
           <div class="card">
+            <h2>Exam kits</h2>
+            <div id="kit-list"></div>
+            <form id="kit-form" class="kit-add" novalidate>
+              <label for="kit-title" class="sr-only">Kit name</label>
+              <input id="kit-title" type="text" maxlength="80" autocomplete="off" placeholder="Name, e.g. BIO 2000 · Exam 2 Kit">
+              <label for="kit-url" class="sr-only">Link</label>
+              <input id="kit-url" type="url" maxlength="500" autocomplete="off" placeholder="Link (https://…)">
+              <label for="kit-course" class="sr-only">Subject</label>
+              <select id="kit-course"></select>
+              <button type="submit" class="btn-primary">Add</button>
+            </form>
+          </div>
+          <div class="card">
             <h2>Missed questions</h2>
             <p class="empty">Log every question you get wrong. Redo it in 2 days, then in a week. Get it right both times and it's cleared.</p>
             <form id="miss-form" class="miss-form" novalidate>
@@ -175,30 +189,58 @@
           </div>
         </div>
       </section>
-      <section id="view-materials" class="view" hidden>
-        <header class="day-head"><h1 class="date">Materials</h1></header>
-        <div class="card"><p class="empty">Materials are coming in a later version.</p></div>
+      <section id="view-journal" class="view" hidden>
+        <header class="day-head"><div><p class="eyebrow" id="journal-day">&nbsp;</p><h1 class="date">Journal</h1></div></header>
+        <div class="journal-grid"><div id="journal-main"></div><aside id="journal-side" aria-label="Past entries"></aside></div>
       </section>
       <!-- SETTINGS -->
       <section id="view-settings" class="view" hidden>
         <header class="day-head"><h1 class="date">Settings</h1></header>
-        <div class="card settings">
-          <h2>Appearance</h2>
-          <label class="set-row"><span>Colours<small>Automatic follows the time of day: light by day, dark from 7 PM</small></span>
-            <select id="set-theme"><option value="auto">Automatic</option><option value="light">Always light</option><option value="dark">Always dark</option></select></label>
-          <p class="set-foot" id="set-now"></p>
-          <p class="set-foot">The page follows the time of day, and the top of the screen takes the colour of the subject you are studying. This choice is saved on this device.</p>
-        </div>
-        <div class="card settings">
-          <h2>Subjects</h2>
-          <p class="set-foot set-lead">Your courses and anything else you track. To-dos can be tagged with one, and the app takes on a subject's colour during its class or study session.</p>
-          <ul id="course-list" class="course-list"></ul>
-          <form id="course-form" class="course-form" autocomplete="off">
-            <label for="course-new" class="sr-only">New subject</label>
-            <input id="course-new" type="text" maxlength="40" placeholder="Add subjects, e.g. BIO 2000, Chem 1130">
-            <button type="submit" class="nav-btn">Add</button>
-          </form>
-          <datalist id="course-options"></datalist>
+        <div class="settings-grid">
+          <div>
+            <div class="card settings">
+              <h2>Colours</h2>
+              <label class="set-row"><span>Mode<small>Automatic follows the time of day: light by day, dark from 7 PM</small></span>
+                <select id="set-theme"><option value="auto">Automatic</option><option value="light">Always light</option><option value="dark">Always dark</option></select></label>
+              <label class="set-row"><span>Background art<small>Fine line drawings behind the page for the subject you are studying</small></span>
+                <input type="checkbox" id="set-art" class="switch"></label>
+              <p class="set-foot" id="set-now"></p>
+              <p class="set-foot">The page follows the time of day, and the top of the screen takes the colour of the subject you are studying. These choices are saved on this device.</p>
+            </div>
+            <div class="card settings">
+              <h2>Travel mode</h2>
+              <label class="set-row"><span>Use a city's colours when travelling<small>Switches on when you are near a listed city and away from home</small></span>
+                <input type="checkbox" id="set-travel" class="switch"></label>
+              <div class="set-row"><span>Home<small id="set-home-note">Not set yet</small></span>
+                <button type="button" class="nav-btn" id="set-home">Set to where I am now</button></div>
+              <label class="set-row"><span>City<small>Let your location choose, or pick one by hand</small></span>
+                <select id="set-city"></select></label>
+              <p class="set-foot">Your location is rounded to the nearest town, stays on this device, and is only used to work out which city you are in.</p>
+            </div>
+          </div>
+          <div>
+            <div class="card settings">
+              <h2>Subjects</h2>
+              <p class="set-foot set-lead">Your courses and anything else you track. To-dos can be tagged with one, and the app takes on a subject's colour during its class or study session.</p>
+              <ul id="course-list" class="course-list"></ul>
+              <form id="course-form" class="course-form" autocomplete="off">
+                <label for="course-new" class="sr-only">New subject</label>
+                <input id="course-new" type="text" maxlength="400" placeholder="Add subjects, e.g. BIO 2000, Chem 1130">
+                <button type="submit" class="nav-btn">Add</button>
+              </form>
+              <datalist id="course-options"></datalist>
+            </div>
+            <div class="card settings">
+              <h2>To-do lists</h2>
+              <p class="set-foot set-lead">Tap a name to rename it. Removing a list moves its tasks to the first list.</p>
+              <ul id="list-list" class="course-list"></ul>
+              <form id="list-form" class="course-form" autocomplete="off">
+                <label for="list-new" class="sr-only">New list</label>
+                <input id="list-new" type="text" maxlength="30" placeholder="Add a list, e.g. Errands">
+                <button type="submit" class="nav-btn">Add</button>
+              </form>
+            </div>
+          </div>
         </div>
       </section>
     </main>

@@ -5,6 +5,7 @@
 // other tasks, and nothing is ever hard-deleted (deleted tasks are flagged).
 
 import * as theme from "./theme.js";
+import * as vault from "./vault.js";
 
 const FIREBASE_VERSION = "13.2.0";
 const FB = "https://www.gstatic.com/firebasejs/" + FIREBASE_VERSION + "/";
@@ -21,7 +22,7 @@ const DEFAULT_START = 8;  // timeline normally runs 8 AM
 const DEFAULT_END = 22;   // to 10 PM, and stretches to fit earlier or later events
 const EVENTS_CACHE = "hb-events-v1";      // this device's copy of the last calendar fetch
 const REFRESH_MS = 10 * 60 * 1000;        // refetch the calendar every 10 minutes
-const TABS = ["today", "calendar", "todo", "study", "materials", "settings"];
+const TABS = ["today", "calendar", "todo", "study", "journal", "settings"];
 const MAX_TITLE = 200;
 const TODAY_LIMIT = 6;  // tasks shown on the Today card
 
@@ -43,6 +44,8 @@ const state = {
   kitLinks: {},          // exam name -> link to its exam kit (synced in settings/kits)
   courses: [],           // subjects for tagging tasks (synced in settings/courses)
   courseColors: {},      // subject name -> its colour
+  lists: [],             // to-do lists (synced in settings/lists)
+  kits: [],              // exam kits shown in Study (synced in settings/kits)
   range: null,        // [startMs, endMs] the main copy covers
 };
 let fb = null;        // loaded Firebase functions + instances
@@ -60,7 +63,8 @@ function showTab() {
     if (t === tab) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   });
-  if (tab === "study") { renderStudy(); renderMissed(); }
+  if (tab === "study") { renderStudy(); renderMissed(); renderKits(); }
+  if (tab === "journal") renderJournal();
   if (tab === "settings") renderSettings();
   if (tab === "calendar") renderCalendarTab();
   else cal.gridLive = false;   // a hidden calendar loses its scroll position; it's put back on return
@@ -381,6 +385,18 @@ function renderNow() {
     title.addEventListener("click", () => openEventSheet(current));
     body.appendChild(title);
   } else body.appendChild(el("h2", "now-title", next ? "Free time" : blocks.length ? "Nothing else today" : "Nothing scheduled today"));
+  if (!current) {
+    // A free gap: offer a few things from the Ideas list that fit it
+    const gap = next ? Math.round((next.startMs - now) / 60000) : 240;
+    const fits = openIdeas().filter((t) => (t.mins || 30) <= gap);
+    if (fits.length) {
+      const day = Math.floor(now / 86400000), box = el("div", "now-ideas");
+      box.appendChild(el("span", "now-when", "Ideas for this gap"));
+      for (let i = 0; i < Math.min(3, fits.length); i++) box.appendChild(el("a", "", fits[(day + i) % fits.length].title));
+      box.querySelectorAll("a").forEach((a) => { a.href = "#todo"; a.addEventListener("click", () => { setPref("todo-list", IDEAS); renderTodoPage(); }); });
+      body.appendChild(box);
+    }
+  }
   main.appendChild(body);
   if (next) {
     const up = el("div", "now-next");
@@ -486,7 +502,23 @@ function playTick() {
 // ================================================================ TASKS (data)
 const PRIORITIES = ["normal", "high", "low"];   // tapping the flag steps through these
 const priRank = (t) => (t.priority === "high" ? 0 : t.priority === "low" ? 2 : 1);
-const openTasks = () => state.tasks.filter((t) => !t.done).sort((a, b) => priRank(a) - priRank(b) || a.createdAt - b.createdAt);
+// ---- To-do lists. A list is where a task lives (School, Personal); a subject is what it is about.
+const IDEAS = "ideas";   // things to do in free time: kept out of Today's list and the task counts
+const DEFAULT_LISTS = [{ id: "school", name: "School" }, { id: "personal", name: "Personal" }, { id: IDEAS, name: "Ideas" }];
+const MAX_LISTS = 12;
+state.lists = DEFAULT_LISTS;
+// A task with no list, or whose list was removed, belongs to the first ordinary list
+function listOf(t) {
+  if (state.lists.some((l) => l.id === t.list)) return t.list;
+  return (state.lists.find((l) => l.id !== IDEAS) || state.lists[0]).id;
+}
+function lastList() {
+  const id = pref("last-list", "");
+  return state.lists.some((l) => l.id === id && id !== IDEAS) ? id : listOf({});
+}
+const byPriority = (a, b) => priRank(a) - priRank(b) || a.createdAt - b.createdAt;
+const openTasks = () => state.tasks.filter((t) => !t.done && listOf(t) !== IDEAS).sort(byPriority);
+const openIdeas = () => state.tasks.filter((t) => !t.done && listOf(t) === IDEAS).sort(byPriority);
 const doneTasks = () => state.tasks.filter((t) => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
 
 function taskRef(id) {
@@ -501,12 +533,80 @@ function save(promise) {
   });
 }
 
-function addTask(raw) {
+function addTask(raw, list) {
   const title = raw.replace(/\s+/g, " ").trim().slice(0, MAX_TITLE);
   if (!title) return false;
   const ref = fb.doc(fb.collection(fb.db, "users", state.user.uid, "tasks"));
-  const now = Date.now();
-  save(fb.setDoc(ref, { title, done: false, deleted: false, createdAt: now, updatedAt: now, doneAt: null }));
+  const now = Date.now(), into = state.lists.some((l) => l.id === list) ? list : lastList();
+  if (into !== IDEAS) setPref("last-list", into);
+  save(fb.setDoc(ref, { title, done: false, deleted: false, createdAt: now, updatedAt: now, doneAt: null, list: into }));
+  return true;
+}
+function setTaskList(task, list) {
+  if (!state.lists.some((l) => l.id === list)) return;
+  save(fb.updateDoc(taskRef(task.id), { list, updatedAt: Date.now() }));
+}
+function setTaskMins(task, mins) {
+  save(fb.updateDoc(taskRef(task.id), { mins: [15, 30, 60, 120].includes(mins) ? mins : null, updatedAt: Date.now() }));
+}
+function listsRef() { return fb.doc(fb.db, "users", state.user.uid, "settings", "lists"); }
+function saveLists(lists) {
+  if (!state.listsLoaded) { toast("Your lists haven't loaded yet. Check your connection and try again."); return; }
+  state.lists = lists;
+  renderLists();
+  if (!isEditingTask()) renderTodoPage();
+  renderTodayCard();
+  save(fb.setDoc(listsRef(), { lists, updatedAt: Date.now() }));
+}
+async function loadLists() {
+  state.lists = DEFAULT_LISTS; state.listsLoaded = false;
+  try {
+    const snap = await fb.getDoc(listsRef());
+    state.listsLoaded = true;   // a failed read must never let the defaults overwrite your lists
+    const raw = snap.exists() ? snap.data().lists : null;
+    if (Array.isArray(raw)) {
+      const seen = new Set();
+      const lists = raw.filter((l) => l && typeof l.id === "string" && l.id && !seen.has(l.id) && seen.add(l.id))
+        .map((l) => ({ id: l.id.slice(0, 40), name: cleanCourse(l.name).slice(0, 30) || "List" })).slice(0, MAX_LISTS);
+      if (lists.length) state.lists = lists;
+    }
+  } catch (e) { console.warn("Couldn't read your lists:", e); }
+  renderLists();
+  renderTasks();
+}
+function renderLists() {
+  const host = $("list-list");
+  if (!host) return;
+  host.textContent = "";
+  state.lists.forEach((l) => {
+    const li = document.createElement("li");
+    const name = document.createElement("input");
+    name.type = "text"; name.maxLength = 30; name.value = l.name; name.className = "list-name";
+    name.setAttribute("aria-label", "List name");
+    name.addEventListener("change", () => {
+      const next = cleanCourse(name.value).slice(0, 30);
+      if (!next) { name.value = l.name; return; }
+      saveLists(state.lists.map((x) => (x.id === l.id ? { ...x, name: next } : x)));
+    });
+    const del = document.createElement("button");
+    del.type = "button"; del.className = "del"; del.textContent = "×";
+    del.setAttribute("aria-label", "Remove list: " + l.name);
+    del.disabled = state.lists.filter((x) => x.id !== IDEAS).length <= 1 && l.id !== IDEAS;
+    del.addEventListener("click", () => {
+      const before = state.lists;
+      saveLists(before.filter((x) => x.id !== l.id));
+      toast("List removed. Its tasks moved to " + state.lists[0].name + ".", "Undo", () => saveLists(before));
+    });
+    li.append(name, del);
+    host.appendChild(li);
+  });
+}
+function addList(raw) {
+  const name = cleanCourse(raw).slice(0, 30);
+  if (!name) return false;
+  if (state.lists.some((l) => l.name.toLowerCase() === name.toLowerCase())) { toast("That list already exists."); return false; }
+  if (state.lists.length >= MAX_LISTS) { toast("That's the limit of " + MAX_LISTS + " lists."); return false; }
+  saveLists([...state.lists, { id: "l" + Date.now().toString(36), name }]);
   return true;
 }
 
@@ -722,6 +822,25 @@ function taskItem(task, full) {
   del.addEventListener("click", () => deleteTask(task));
 
   li.append(check, text);
+  if (full && state.lists.length > 1) {
+    // Which list the task lives in; ideas also say how long they take
+    const move = document.createElement("select");
+    move.className = "task-pick list-pick";
+    move.setAttribute("aria-label", "List: " + task.title);
+    state.lists.forEach((l) => { const o = document.createElement("option"); o.value = l.id; o.textContent = l.name; move.appendChild(o); });
+    move.value = listOf(task);
+    move.addEventListener("change", () => setTaskList(task, move.value));
+    li.appendChild(move);
+    if (listOf(task) === IDEAS) {
+      const mins = document.createElement("select");
+      mins.className = "task-pick has-course";
+      mins.setAttribute("aria-label", "Time needed: " + task.title);
+      [[0, "Any time"], [15, "15 min"], [30, "30 min"], [60, "1 hour"], [120, "2 hours"]].forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; mins.appendChild(o); });
+      mins.value = task.mins || 0;
+      mins.addEventListener("change", () => setTaskMins(task, Number(mins.value)));
+      li.appendChild(mins);
+    }
+  }
   if (full) {
     const sel = document.createElement("select");
     sel.className = "course-pick" + (task.course ? " has-course" : "");
@@ -784,7 +903,7 @@ const isEditingTask = () => {
   return !!(el && (el.classList.contains("task-edit") || el.classList.contains("due-input")));
 };
 
-function addForm(placeholder) {
+function addForm(placeholder, list) {
   const form = document.createElement("form");
   form.className = "add-task";
   const input = document.createElement("input");
@@ -800,7 +919,7 @@ function addForm(placeholder) {
   form.append(plus, input);
   form.addEventListener("submit", (e) => {
     e.preventDefault();
-    if (addTask(input.value)) input.value = "";
+    if (addTask(input.value, list)) input.value = "";
   });
   return form;
 }
@@ -857,12 +976,31 @@ function renderTodayCard() {
 }
 
 function renderTodoPage() {
-  const host = $("todo-full");
+  let host = $("todo-full");
   if (state.status === "loading") return skeleton(host);
   if (state.status === "error") return errorBox(host, "Couldn't load your tasks.");
   host.textContent = "";
-  const all = openTasks();
+  const main = document.createElement("div"), side = document.createElement("aside");
+  main.className = "todo-main"; side.className = "todo-side";
+  host.append(main, side);
+  const hostAll = host;
+  host = main;
+  const view = state.lists.some((l) => l.id === pref("todo-list", "")) ? pref("todo-list", "") : "";
+  const all = state.tasks.filter((t) => !t.done && (view ? listOf(t) === view : true)).sort(byPriority);
   const done = doneTasks();
+  // Lists are the main switch
+  const seg = document.createElement("div");
+  seg.className = "seg";
+  seg.setAttribute("role", "group");
+  seg.setAttribute("aria-label", "Lists");
+  [["", "All"], ...state.lists.map((l) => [l.id, l.name])].forEach(([id, name]) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = name;
+    b.setAttribute("aria-pressed", String(id === view));
+    b.addEventListener("click", () => { setPref("todo-list", id); renderTodoPage(); });
+    seg.appendChild(b);
+  });
+  host.appendChild(seg);
   // Filter by subject, offered once any open task has one
   const used = [...new Set(all.map((t) => t.course).filter(Boolean))].sort();
   const filter = used.includes(todoFilter()) ? todoFilter() : "";
@@ -884,15 +1022,29 @@ function renderTodoPage() {
   if (open.length === 0) {
     const p = document.createElement("p");
     p.className = "empty";
-    p.textContent = done.length ? "All done. Nice work." : "No tasks yet. Type one below and press Return.";
+    p.textContent = view === IDEAS ? "Nothing here yet. Add things you'd enjoy doing when you have a free hour."
+      : done.length ? "All done. Nice work." : "No tasks yet. Type one below and press Return.";
     host.appendChild(p);
   } else {
-    const ul = document.createElement("ul");
-    ul.className = "tasks";
-    open.forEach((t) => ul.appendChild(taskItem(t, true)));
-    host.appendChild(ul);
+    // "All" shows each list that has something in it, under its name
+    (view ? [state.lists.find((l) => l.id === view)] : state.lists).forEach((l) => {
+      const items = open.filter((t) => listOf(t) === l.id);
+      if (!items.length) return;
+      if (!view) {
+        const h = document.createElement("h3");
+        h.className = "list-head";
+        h.textContent = l.name + " · " + items.length;
+        host.appendChild(h);
+      }
+      const ul = document.createElement("ul");
+      ul.className = "tasks";
+      items.forEach((t) => ul.appendChild(taskItem(t, true)));
+      host.appendChild(ul);
+    });
   }
-  host.appendChild(addForm("Add a task"));
+  const target = view || lastList();
+  host.appendChild(addForm(view ? "Add to " + state.lists.find((l) => l.id === view).name : "Add a task", target));
+  host = side;
 
   // Quizzes and assignments from your calendar (Canvas). Ticking one here clears it there too.
   const upcoming = upcomingDeadlines();
@@ -1204,10 +1356,11 @@ async function startData() {
     stopDone();
     stopSessions();
     stopGrowth();
-    if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); loadCourses(); }
+    if (user) { startTasks(user); startDone(user); startSessions(user); startGrowth(user); loadCalendarSettings(user); loadKitLinks(); loadCourses(); loadLists(); startJournal(user); }
     else {
       state.kitLinks = {};
       state.courses = []; state.courseColors = {}; renderCourses();
+      state.lists = DEFAULT_LISTS; state.kits = []; renderLists(); renderKits(); stopJournal();
       renderTasks();
       state.calUrl = null; state.events = []; state.calStatus = "none"; renderCalendar();
     }
@@ -1441,22 +1594,88 @@ let examKitEditing = false;
 const kitKey = (exam) => exam.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().slice(0, 80) || "exam";
 function kitsRef() { return fb.doc(fb.db, "users", state.user.uid, "settings", "kits"); }
 function saveKitLink(key, url) {
+  if (!state.kitsLoaded) { toast("Your kits haven't loaded yet. Check your connection and try again."); return; }
   const links = { ...state.kitLinks };
   if (url) links[key] = url; else delete links[key];
   state.kitLinks = links;
   renderExamCard();
-  save(fb.setDoc(kitsRef(), { links, updatedAt: Date.now() }));
+  save(fb.setDoc(kitsRef(), { links, items: state.kits, updatedAt: Date.now() }));
+}
+// Exam kits listed in the Study tab: { id, title, url, course }
+const cleanKit = (k) => {
+  const title = cleanCourse(k && k.title).slice(0, 80), url = String((k && k.url) || "").trim().slice(0, 500);
+  return title && /^https:\/\/\S+$/i.test(url) ? { id: String((k && k.id) || "k" + Math.random().toString(36).slice(2, 9)), title, url, course: cleanCourse(k && k.course) } : null;
+};
+function saveKits(items) {
+  if (!state.kitsLoaded) { toast("Your kits haven't loaded yet. Check your connection and try again."); return; }
+  state.kits = items.slice(0, 60);
+  renderKits();
+  save(fb.setDoc(kitsRef(), { links: state.kitLinks, items: state.kits, updatedAt: Date.now() }));
+}
+function pendingKits() { try { return (JSON.parse(sessionStorage.getItem("hb-kit-import") || "[]") || []).map(cleanKit).filter(Boolean); } catch (e) { return []; } }
+function renderKits() {
+  const host = $("kit-list"), pick = $("kit-course");
+  if (!host) return;
+  host.textContent = "";
+  const keep = pick.value;
+  pick.textContent = "";
+  [["", "No subject"], ...state.courses.map((c) => [c, c])].forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; pick.appendChild(o); });
+  pick.value = state.courses.includes(keep) ? keep : "";
+  const waiting = pendingKits().filter((k) => !state.kits.some((x) => x.url === k.url));
+  if (waiting.length && state.user && state.kitsLoaded) {
+    const box = document.createElement("div");
+    box.className = "kit-import";
+    const text = document.createElement("span");
+    text.textContent = waiting.length + (waiting.length === 1 ? " exam kit is" : " exam kits are") + " ready to add.";
+    const add = document.createElement("button");
+    add.type = "button"; add.className = "btn-primary"; add.textContent = "Add all";
+    add.addEventListener("click", () => { try { sessionStorage.removeItem("hb-kit-import"); } catch (e) {} saveKits([...state.kits, ...waiting]); });
+    box.append(text, add);
+    host.appendChild(box);
+  }
+  if (!state.kits.length) {
+    const p = document.createElement("p");
+    p.className = "empty";
+    p.textContent = "No kits yet. Add the link to any exam kit and it opens from here in one tap.";
+    host.appendChild(p);
+    return;
+  }
+  const groups = [...new Set(state.kits.map((k) => k.course || ""))].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b));
+  groups.forEach((g) => {
+    const h = document.createElement("h3");
+    h.className = "list-head";
+    h.textContent = g || "Other";
+    const ul = document.createElement("ul");
+    ul.className = "kit-rows";
+    state.kits.filter((k) => (k.course || "") === g).forEach((k) => {
+      const li = document.createElement("li");
+      const a = document.createElement("a");
+      a.href = k.url; a.target = "_blank"; a.rel = "noopener"; a.textContent = k.title;
+      if (g) a.style.setProperty("--c", courseColour(g));
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "del"; del.textContent = "×";
+      del.setAttribute("aria-label", "Remove kit: " + k.title);
+      del.addEventListener("click", () => { const before = state.kits; saveKits(before.filter((x) => x.id !== k.id)); toast("Kit removed", "Undo", () => saveKits(before)); });
+      li.append(a, del);
+      ul.appendChild(li);
+    });
+    host.append(h, ul);
+  });
 }
 async function loadKitLinks() {
-  state.kitLinks = {};
+  state.kitLinks = {}; state.kits = []; state.kitsLoaded = false;
   try {
     const snap = await fb.getDoc(kitsRef());
     const links = snap.exists() ? snap.data().links : null;
+    const items = snap.exists() ? snap.data().items : null;
+    state.kits = Array.isArray(items) ? items.map(cleanKit).filter(Boolean).slice(0, 60) : [];
+    state.kitsLoaded = true;   // only now is it safe to save kits: a failed read must never overwrite them
     if (links && typeof links === "object") {
       state.kitLinks = Object.fromEntries(Object.entries(links).filter(([, v]) => typeof v === "string" && /^https:\/\//i.test(v)));
     }
   } catch (e) { console.warn("Couldn't read exam kit links:", e); }
   renderExamCard();
+  renderKits();
 }
 
 // ================================================================ CALENDAR TAB
@@ -3120,7 +3339,7 @@ function wireGrowth() {
 
 // ================================================================ SETTINGS: colours
 // The choice is saved on this device (localStorage), so the Mac and the iPhone can differ.
-const look = { subject: "", time: "" };
+const look = { subject: "", time: "", city: null };
 function pref(k, d) { try { return localStorage.getItem("hb-" + k) || d; } catch (e) { return d; } }
 function setPref(k, v) { try { localStorage.setItem("hb-" + k, v); } catch (e) {} }
 
@@ -3137,24 +3356,113 @@ function currentSubject() {
   return "";
 }
 
+// ---- travel mode
+function place(k) { try { const p = JSON.parse(pref(k, "null")); return p && isFinite(p.lat) && isFinite(p.lon) ? p : null; } catch (e) { return null; } }
+function currentCity() {
+  if (pref("travel", "on") !== "on") return null;
+  const pick = pref("city", "auto");
+  if (theme.CITIES[pick]) return pick;
+  return pick === "auto" ? theme.cityNear(place("pos"), place("home")) : null;
+}
+function locate(saveAs, then) {
+  if (!navigator.geolocation) { if (then) then(false); return; }
+  navigator.geolocation.getCurrentPosition((pos) => {
+    // one decimal place is about 10 km: enough to tell cities apart, not an address
+    const at = { lat: Math.round(pos.coords.latitude * 10) / 10, lon: Math.round(pos.coords.longitude * 10) / 10, at: Date.now() };
+    setPref("pos", JSON.stringify(at));
+    if (saveAs === "home") setPref("home", JSON.stringify(at));
+    applyLook();
+    if (then) then(true);
+  }, () => { if (then) then(false); }, { timeout: 15000, maximumAge: 600000 });
+}
+// Quietly re-check where we are, at most hourly, and only once location has already been allowed
+function refreshPlace() {
+  if (pref("travel", "on") !== "on" || pref("city", "auto") !== "auto" || !place("home")) return;
+  const pos = place("pos");
+  if (pos && Date.now() - (pos.at || 0) < 3600000) return;
+  if (!navigator.permissions || !navigator.permissions.query) return;
+  navigator.permissions.query({ name: "geolocation" }).then((p) => { if (p.state === "granted") locate(null); }).catch(() => {});
+}
+
+// ---- the drawing behind the page: a city skyline when travelling, else fine line art for the subject
+let backdropKey = null;
+async function renderBackdrop(city, subject) {
+  const host = $("backdrop");
+  const key = city ? "city:" + city : pref("art", "on") === "on" ? "art:" + theme.artKey(subject) : "";
+  if (!host || key === backdropKey) return;
+  backdropKey = key;
+  if (!key) { host.textContent = ""; return; }
+  try {
+    let svg;
+    if (city) {
+      const sky = (await import("./skylines.js")).SKYLINES[city];
+      const paint = (s) => s.replace(/url\(#WIN\)/g, "url(#bd-win)").replace(/fill="GROUNDC"/g, 'style="fill: var(--bg)"');
+      svg = '<svg viewBox="0 0 1200 900" preserveAspectRatio="xMidYMax slice" fill="currentColor" style="color: var(--deep)"><defs>' +
+        '<linearGradient id="bd-fade" gradientUnits="userSpaceOnUse" x1="0" y1="900" x2="0" y2="0"><stop offset="0" stop-color="#fff"/><stop offset=".55" stop-color="#9a9a9a"/><stop offset="1" stop-color="#3a3a3a"/></linearGradient>' +
+        '<mask id="bd-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="900"><rect width="1200" height="900" fill="url(#bd-fade)"/></mask>' +
+        '<pattern id="bd-win" width="13" height="17" patternUnits="userSpaceOnUse"><rect x="3" y="4" width="5" height="8" style="fill: var(--bg)" fill-opacity=".55"/></pattern></defs>' +
+        '<g mask="url(#bd-mask)"><g opacity=".04">' + paint(sky.back) + '</g><g opacity=".085">' + paint(sky.front) + '<rect y="895" width="1200" height="5"/></g></g></svg>';
+    } else {
+      const art = (await import("./art.js")).ART[key.slice(4)];
+      svg = '<svg viewBox="0 0 1200 900" preserveAspectRatio="xMaxYMax slice" style="color: var(--text)"><defs>' +
+        '<radialGradient id="bd-fade" gradientUnits="userSpaceOnUse" cx="1100" cy="860" r="900"><stop offset="0" stop-color="#fff"/><stop offset=".55" stop-color="#6a6a6a"/><stop offset="1" stop-color="#000"/></radialGradient>' +
+        '<mask id="bd-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="1200" height="900"><rect width="1200" height="900" fill="url(#bd-fade)"/></mask></defs>' +
+        '<g mask="url(#bd-mask)" fill="none" stroke="currentColor" stroke-width=".75" stroke-linecap="round" stroke-linejoin="round" opacity=".12">' + art + "</g></svg>";
+    }
+    if (backdropKey === key) host.innerHTML = svg;
+  } catch (e) { console.warn("Couldn't load the background art:", e); backdropKey = null; }
+}
+
 function applyLook() {
   const choice = pref("theme", "auto");
   const time = choice === "light" ? "afternoon" : choice === "dark" ? "night" : theme.timeOfDay(new Date());
-  const subject = currentSubject();
-  theme.apply(time, subject ? courseColour(subject) : null);
-  const changed = subject !== look.subject || time !== look.time;
-  look.subject = subject; look.time = time;
+  const subject = currentSubject(), city = currentCity();
+  theme.apply(time, subject ? courseColour(subject) : null, city);
+  renderBackdrop(city, subject);
+  const changed = subject !== look.subject || time !== look.time || city !== look.city;
+  look.subject = subject; look.time = time; look.city = city;
   if (changed && $("view-settings") && !$("view-settings").hidden) renderSettings();
 }
 
 function renderSettings() {
   $("set-theme").value = pref("theme", "auto");
+  $("set-art").checked = pref("art", "on") === "on";
+  $("set-travel").checked = pref("travel", "on") === "on";
   const t = theme.TIMES[look.time];
-  $("set-now").textContent = "Right now: " + (t ? t.name : "") + " colours" + (look.subject ? " · " + look.subject : " · no subject on");
+  $("set-now").textContent = look.city ? "Right now: " + theme.CITIES[look.city].name + " colours (travel mode)"
+    : "Right now: " + (t ? t.name : "") + " colours" + (look.subject ? " · " + look.subject : " · no subject on");
+  const city = $("set-city");
+  if (!city.options.length) {
+    [["auto", "By location"], ...Object.entries(theme.CITIES).map(([k, c]) => [k, c.name])].forEach(([v, label]) => { const o = document.createElement("option"); o.value = v; o.textContent = label; city.appendChild(o); });
+  }
+  city.value = theme.CITIES[pref("city", "auto")] ? pref("city", "auto") : "auto";
+  $("set-home-note").textContent = place("home") ? "Set (rounded to the nearest town)" : "Not set yet. Travel mode needs it to know when you are away.";
+  $("set-home").textContent = place("home") ? "Update to where I am now" : "Set to where I am now";
 }
 
 function wireSettings() {
   $("set-theme").addEventListener("change", (e) => { setPref("theme", e.target.value); applyLook(); renderSettings(); });
+  $("set-art").addEventListener("change", (e) => { setPref("art", e.target.checked ? "on" : "off"); applyLook(); });
+  $("set-travel").addEventListener("change", (e) => { setPref("travel", e.target.checked ? "on" : "off"); applyLook(); renderSettings(); });
+  $("set-city").addEventListener("change", (e) => { setPref("city", e.target.value); applyLook(); renderSettings(); });
+  $("set-home").addEventListener("click", () => {
+    const btn = $("set-home");
+    btn.disabled = true; btn.textContent = "Finding…";
+    locate("home", (ok) => { btn.disabled = false; renderSettings(); toast(ok ? "Home set." : "Couldn't get your location. Check that it's allowed for Homebase."); });
+  });
+  $("list-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!fb || !state.user) return;
+    if (addList($("list-new").value)) $("list-new").value = "";
+  });
+  $("kit-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    if (!fb || !state.user) return;
+    const kit = cleanKit({ title: $("kit-title").value, url: $("kit-url").value, course: $("kit-course").value });
+    if (!kit) { toast("Give the kit a name and a link that starts with https://"); return; }
+    saveKits([...state.kits, kit]);
+    $("kit-title").value = ""; $("kit-url").value = "";
+  });
   $("course-form").addEventListener("submit", (e) => {
     e.preventDefault();
     if (!fb || !state.user) return;
@@ -3169,8 +3477,173 @@ function wireSettings() {
       history.replaceState(null, "", url.pathname + url.search + "#settings");
       showTab();
     }
+    // ...?kits=Name~link~Subject|Name~link~Subject lines kits up in Study, where one press adds them
+    const kits = url.searchParams.get("kits");
+    if (kits) {
+      const items = kits.split("|").map((x) => x.split("~")).map(([title, link, course]) => cleanKit({ title, url: link, course })).filter(Boolean);
+      if (items.length) sessionStorage.setItem("hb-kit-import", JSON.stringify(items));
+      url.searchParams.delete("kits");
+      history.replaceState(null, "", url.pathname + url.search + "#study");
+      showTab();
+    }
   } catch (e) {}
   applyLook();
+  refreshPlace();
+}
+
+// ================================================================ JOURNAL
+// One private entry a day. The text is encrypted on this device with your passphrase before it is saved (vault.js),
+// so it is unreadable online. Stored in users/{uid}/journal/{yyyy-mm-dd}; the passphrase check lives in settings/journal.
+const PROMPTS = [
+  ["well", "What went well today, and why?"],
+  ["differently", "What would I do differently?"],
+  ["grateful", "One thing I'm grateful for"],
+  ["tomorrow", "Tomorrow's one priority"],
+  ["more", "Anything else on my mind"],
+];
+const journal = { setup: undefined, key: null, docs: new Map(), day: "", shown: "", unsub: null, busy: false };
+const journalKeyName = () => "jk:" + (state.user ? state.user.uid : "");
+function journalRef(day) { return fb.doc(fb.db, "users", state.user.uid, "journal", day); }
+function journalSetupRef() { return fb.doc(fb.db, "users", state.user.uid, "settings", "journal"); }
+async function startJournal(user) {
+  journal.setup = undefined; journal.docs = new Map(); journal.shown = ""; journal.ready = false;
+  journal.key = pref(journalKeyName(), "") || null;
+  try {
+    const snap = await fb.getDoc(journalSetupRef());
+    const d = snap.exists() ? snap.data() : null;
+    journal.setup = d && d.salt && d.check ? { salt: d.salt, check: d.check } : null;
+  } catch (e) { console.warn("Couldn't read the journal setup:", e); journal.setup = "error"; }   // never offer "set a passphrase" on a failed read: that would orphan every entry
+  journal.unsub = fb.onSnapshot(fb.collection(fb.db, "users", user.uid, "journal"), (snap) => {
+    journal.docs = new Map(snap.docs.map((d) => [d.id, d.data()]));
+    const first = !journal.ready;
+    journal.ready = true;
+    if ($("view-journal").hidden) return;
+    if (first) renderJournal(); else renderJournalSide();
+  }, (e) => console.warn("Couldn't load journal entries:", e));
+  if (!$("view-journal").hidden) renderJournal();
+}
+function stopJournal() {
+  if (journal.unsub) journal.unsub();
+  Object.assign(journal, { setup: undefined, key: null, docs: new Map(), shown: "", unsub: null, ready: false });
+}
+function journalDate(day) { const [y, m, d] = day.split("-").map(Number); return new Date(y, m - 1, d); }
+function passForm(first) {
+  const form = document.createElement("form");
+  form.className = "journal-lock";
+  form.noValidate = true;
+  const h = document.createElement("h2"), p = document.createElement("p"), err = document.createElement("p");
+  h.textContent = first ? "Set a journal passphrase" : "Unlock your journal";
+  p.className = "empty";
+  p.textContent = first
+    ? "Your entries are locked with this passphrase before they are saved, so nobody else can read them. If you forget it, the entries cannot be recovered, so write it down somewhere safe. You'll enter it once on each device."
+    : "Enter your journal passphrase. You only do this once on this device.";
+  err.className = "form-error"; err.setAttribute("role", "alert");
+  const mkInput = (label) => { const i = document.createElement("input"); i.type = "password"; i.autocomplete = first ? "new-password" : "current-password"; i.placeholder = label; i.setAttribute("aria-label", label); i.maxLength = 200; return i; };
+  const a = mkInput("Passphrase"), b = first ? mkInput("Type it again") : null;
+  const go = document.createElement("button");
+  go.type = "submit"; go.className = "btn-primary"; go.textContent = first ? "Set passphrase" : "Unlock";
+  form.append(h, p, a, ...(b ? [b] : []), err, go);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (journal.busy) return;
+    err.textContent = "";
+    if (first && a.value.length < 8) { err.textContent = "Use at least 8 characters."; return; }
+    if (first && a.value !== b.value) { err.textContent = "The two don't match."; return; }
+    if (!a.value) return;
+    journal.busy = true; go.disabled = true;
+    try {
+      if (first) {
+        const salt = vault.newSalt(), key = await vault.keyFromPassphrase(a.value, salt);
+        const check = await vault.seal(key, "homebase");
+        await fb.setDoc(journalSetupRef(), { salt, check, createdAt: Date.now() });
+        journal.setup = { salt, check }; journal.key = key;
+      } else {
+        const key = await vault.keyFromPassphrase(a.value, journal.setup.salt);
+        try { await vault.open(key, journal.setup.check); } catch (bad) { err.textContent = "That passphrase doesn't match."; return; }
+        journal.key = key;
+      }
+      setPref(journalKeyName(), journal.key);
+      journal.shown = "";
+      renderJournal();
+    } catch (x) { console.error(x); err.textContent = "Something went wrong. Check your connection and try again."; }
+    finally { journal.busy = false; go.disabled = false; }
+  });
+  return form;
+}
+function renderJournalSide() {
+  const side = $("journal-side");
+  side.textContent = "";
+  if (!journal.key) return;
+  const h = document.createElement("h2");
+  h.textContent = "Entries";
+  side.appendChild(h);
+  const today = ymd(new Date());
+  const days = [...new Set([today, ...journal.docs.keys()])].filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().reverse().slice(0, 60);
+  const ul = document.createElement("ul");
+  ul.className = "journal-days";
+  days.forEach((d) => {
+    const li = document.createElement("li"), b = document.createElement("button");
+    b.type = "button";
+    b.textContent = d === today ? "Today" : journalDate(d).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+    b.setAttribute("aria-current", String(d === journal.day));
+    if (!journal.docs.has(d)) b.classList.add("is-empty");
+    b.addEventListener("click", () => { journal.day = d; journal.shown = ""; renderJournal(); });
+    li.appendChild(b); ul.appendChild(li);
+  });
+  side.appendChild(ul);
+  const lock = document.createElement("button");
+  lock.type = "button"; lock.className = "btn-link"; lock.textContent = "Lock on this device";
+  lock.addEventListener("click", () => { journal.key = null; try { localStorage.removeItem("hb-" + journalKeyName()); } catch (e) {} journal.shown = ""; renderJournal(); });
+  side.appendChild(lock);
+}
+async function renderJournal() {
+  const main = $("journal-main");
+  if (!journal.day) journal.day = ymd(new Date());
+  $("journal-day").textContent = journalDate(journal.day).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  if (!state.user || journal.setup === undefined || !journal.ready) { main.innerHTML = '<p class="empty">Loading…</p>'; $("journal-side").textContent = ""; return; }
+  if (journal.setup === "error") { main.innerHTML = '<p class="empty">Couldn\'t load your journal. Check your connection and reload.</p>'; $("journal-side").textContent = ""; return; }
+  if (!journal.setup || !journal.key) { main.textContent = ""; main.appendChild(passForm(!journal.setup)); $("journal-side").textContent = ""; return; }
+  renderJournalSide();
+  if (journal.shown === journal.day) return;        // never redraw the page under what you're typing
+  const day = journal.day;
+  let entry = {};
+  const box = journal.docs.get(day);
+  if (box && box.data) {
+    try { entry = (await vault.open(journal.key, box)) || {}; }
+    catch (e) { main.innerHTML = '<p class="empty">This entry can\'t be opened with the passphrase on this device. Lock and unlock again with the right one.</p>'; return; }
+  }
+  if (day !== journal.day) return;
+  journal.shown = day;
+  main.textContent = "";
+  const form = document.createElement("form");
+  form.className = "journal-entry";
+  const fields = {};
+  PROMPTS.forEach(([id, label]) => {
+    const wrap = document.createElement("label"), t = document.createElement("textarea"), s = document.createElement("span");
+    s.textContent = label;
+    t.rows = id === "more" ? 5 : 2; t.maxLength = 4000; t.value = (entry.answers && entry.answers[id]) || "";
+    wrap.append(s, t); form.appendChild(wrap); fields[id] = t;
+  });
+  const bar = document.createElement("div"), saveBtn = document.createElement("button"), note = document.createElement("span");
+  bar.className = "journal-bar";
+  saveBtn.type = "submit"; saveBtn.className = "btn-primary"; saveBtn.textContent = "Save";
+  note.className = "journal-note"; note.setAttribute("role", "status");
+  note.textContent = box && box.updatedAt ? "Saved " + fmtTime(box.updatedAt) + " · locked with your passphrase" : "Not saved yet";
+  bar.append(saveBtn, note); form.appendChild(bar);
+  const saveEntry = async () => {
+    const answers = Object.fromEntries(PROMPTS.map(([id]) => [id, fields[id].value.trim()]));
+    try {
+      const sealed = await vault.seal(journal.key, { v: 1, answers });
+      const now = Date.now();
+      journal.docs.set(day, { ...sealed, updatedAt: now });
+      await fb.setDoc(journalRef(day), { ...sealed, updatedAt: now });
+      note.textContent = "Saved " + fmtTime(now) + " · locked with your passphrase";
+      renderJournalSide();
+    } catch (e) { console.error(e); note.textContent = "Couldn't save. Check your connection."; }
+  };
+  form.addEventListener("submit", (e) => { e.preventDefault(); saveEntry(); });
+  form.addEventListener("change", saveEntry);     // leaving a box saves it
+  main.appendChild(form);
 }
 
 // ================================================================ START
@@ -3180,7 +3653,7 @@ renderHeader();
 renderTasks();
 scrollToNow(renderTimeline());
 renderCalendar();
-setInterval(() => { renderHeader(); renderCalendar(); checkStale(); checkWeekRollover(); }, 60 * 1000);
+setInterval(() => { renderHeader(); renderCalendar(); checkStale(); checkWeekRollover(); refreshPlace(); }, 60 * 1000);
 wireSignIn();
 wireCalendar();
 wireCalendarTab();

@@ -107,13 +107,55 @@ export function palette(timeId, subjectColour) {
 }
 
 let applied = "";
-export function apply(timeId, subjectColour) {
-  const key = timeId + "|" + (subjectColour || "");
+export function apply(timeId, subjectColour, city) {
+  const key = city && CITIES[city] ? "city|" + city : timeId + "|" + (subjectColour || "");
   if (key === applied) return;
   applied = key;
-  const p = palette(timeId, subjectColour), root = document.documentElement;
+  const p = city && CITIES[city] ? cityPalette(city) : palette(timeId, subjectColour), root = document.documentElement;
   Object.entries(p.vars).forEach(([k, v]) => root.style.setProperty(k, v));
   root.dataset.theme = p.dark ? "dark" : "light";
-  root.dataset.time = timeId;
+  root.dataset.time = city && CITIES[city] ? "city" : timeId;
   document.querySelectorAll('meta[name="theme-color"]').forEach((m) => { m.content = p.deep; });
+}
+// ---- travel mode: a city's own palette (always light) when you are there and away from home
+// deep, middle, ground, bottom tint, text on deep, muted on deep, accent on deep, text, secondary text, accent on the page
+export const CITIES = {
+  NewYork:   { name: "New York",  lat: 40.71, lon: -74.01,  p: ["#1E2227", "#8D97A3", "#F2F2EF", "#F0DFA8", "#F2F2EF", "#C3C8CE", "#F2C230", "#1E2227", "#52565B", "#8A6D00"] },
+  London:    { name: "London",    lat: 51.51, lon: -0.13,   p: ["#26303B", "#A9B0B5", "#F1EFEA", "#E6C9C4", "#F1EFEA", "#C6CCD2", "#F0796C", "#1D252E", "#51565C", "#B0301F"] },
+  Paris:     { name: "Paris",     lat: 48.86, lon: 2.35,    p: ["#2F3A4A", "#A9B4C2", "#F4EFE6", "#EAD2D0", "#F4EFE6", "#C9D0DA", "#E8C48A", "#232C39", "#50545C", "#9A7434"] },
+  Tokyo:     { name: "Tokyo",     lat: 35.68, lon: 139.69,  p: ["#1B1F3B", "#E59AB0", "#F7F3F0", "#F3D3DB", "#F7F3F0", "#C9CBDD", "#F4A7B9", "#1B1F3B", "#55525E", "#B34A66"] },
+  Dubai:     { name: "Dubai",     lat: 25.20, lon: 55.27,   p: ["#123C46", "#7FC6C4", "#FBF4E6", "#F1D9A8", "#FBF4E6", "#BFD6D8", "#F0CF7A", "#0E2F37", "#4D5A5C", "#A47A1E"] },
+  Istanbul:  { name: "Istanbul",  lat: 41.01, lon: 28.98,   p: ["#1D3F6E", "#6FA8C9", "#F7F1E8", "#F2CFC4", "#F7F1E8", "#C4D2E6", "#F6A090", "#172F52", "#4F5766", "#B5402F"] },
+  Rome:      { name: "Rome",      lat: 41.90, lon: 12.50,   p: ["#6E2A1E", "#D99A6C", "#F7EEDD", "#E3D6A8", "#FBF3E4", "#EBCDBE", "#F3D08B", "#3A1911", "#5E5046", "#A1701A"] },
+  Singapore: { name: "Singapore", lat: 1.35,  lon: 103.82,  p: ["#0F4D3A", "#7FCBA4", "#F3F8F3", "#F7D3DC", "#F3F8F3", "#BFD9CC", "#F6A8C4", "#0D3A2C", "#4A5A52", "#B03A6A"] },
+};
+export function km(a, b) {   // distance between two {lat, lon} points
+  const R = 6371, r = Math.PI / 180, dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(a.lat * r) * Math.cos(b.lat * r) * Math.sin(dLon / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+// The city you are visiting: within 60 km of one, and more than 80 km from home. Null at home or when unsure.
+export function cityNear(here, home) {
+  if (!here || !home || km(here, home) <= 80) return null;
+  const hit = Object.entries(CITIES).map(([key, c]) => [key, km(here, c)]).filter(([, d]) => d <= 60).sort((a, b) => a[1] - b[1])[0];
+  return hit ? hit[0] : null;
+}
+export function cityPalette(key) {
+  const [deep, mid, ground, third, heroText, heroMuted, heroAccent, text, muted, accent] = CITIES[key].p;
+  return {
+    dark: false, deep,
+    vars: {
+      "--bg": ground, "--card": "#FFFFFF", "--text": text, "--muted": muted, "--line": "rgba(" + rgb(text) + ",0.16)", "--gold": accent,
+      "--deep": deep, "--mid": mid, "--third": third, "--hero-text": heroText, "--hero-muted": heroMuted, "--hero-accent": heroAccent,
+      "--on-accent": readable(heroAccent, deep, heroText), "--on-gold": readable(accent, ground, text), "--hero-line": "rgba(" + rgb(heroText) + ",0.2)",
+    },
+  };
+}
+// Which drawing goes behind the page for a subject ("none" = the calm pattern)
+const ART_FOR = [["bio", "bio"], ["chem", "chem"], ["orgo", "chem"], ["hindu", "hinduism"], ["pharm", "pharmd"], ["metap", "metaphysics"], ["philo", "metaphysics"],
+  ["alim", "alim"], ["qirat", "alim"], ["quran", "alim"], ["hifz", "alim"], ["arab", "alim"]];
+export function artKey(subject) {
+  const s = stems(subject || "");
+  const hit = ART_FOR.find(([stem]) => s.some((w) => w.startsWith(stem) || stem.startsWith(w)));
+  return hit ? hit[1] : "none";
 }
